@@ -68,10 +68,24 @@ const connect = async () => {
     await api.login({ username: BOT_USERNAME, password: BOT_PASSWORD });
     
     // Get the channel IDs from their names using the SDK's built-in methods
-    SUMMARY_CHANNEL_ID = await driver.getRoomId(SUMMARY_CHANNEL_NAME);
-
-    if (!SUMMARY_CHANNEL_ID) {
-      console.error(`Could not find a channel named "${SUMMARY_CHANNEL_NAME}". Exiting.`);
+    console.log(`Looking up ID for channel: ${SUMMARY_CHANNEL_NAME}`);
+    try {
+      SUMMARY_CHANNEL_ID = await driver.getRoomId(SUMMARY_CHANNEL_NAME);
+      
+      if (!SUMMARY_CHANNEL_ID) {
+        console.error(`[Error] Could not find a channel named "${SUMMARY_CHANNEL_NAME}".`);
+        console.error(`Please ensure the channel exists and that the bot user (@${BOT_USERNAME}) has been invited to it.`);
+        process.exit(1);
+      }
+      
+      console.log(`Found ID for channel "${SUMMARY_CHANNEL_NAME}": ${SUMMARY_CHANNEL_ID}`);
+    } catch (roomError) {
+      if (roomError.error === 'error-not-allowed') {
+        console.error(`[Permission Error] The bot is not allowed to access the room "${SUMMARY_CHANNEL_NAME}".`);
+        console.error(`Action required: Invite the bot user (@${BOT_USERNAME}) to the channel.`);
+      } else {
+        console.error(`[Error] Failed to look up room "${SUMMARY_CHANNEL_NAME}":`, roomError.message || roomError);
+      }
       process.exit(1);
     }
 
