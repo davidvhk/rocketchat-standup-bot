@@ -1,0 +1,16 @@
+{
+  "name": "rocketchat-standup-bot",
+  "version": "1.0.0",
+  "description": "A Node.js bot for automated standup meetings on Rocket.Chat.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@rocket.chat/sdk": "^0.2.9-2",
+    "dotenv": "^16.0.3",
+    "node-cron": "^3.0.0"
+  },
+  "author": "David Vanhoucke",
+  "license": "MIT"
+}

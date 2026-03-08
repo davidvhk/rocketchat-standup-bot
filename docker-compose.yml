@@ -1,0 +1,15 @@
+# docker-compose.yml
+# This file defines the services for the Rocket.Chat Standup Bot.
+# It mounts the .env file as a volume for easy configuration without rebuilding the image.
+
+version: '3.8'
+
+services:
+  standup-bot:
+    image: rocketchat-standup-bot
+    restart: always
+    environment:
+      - TZ=Europe/London
+    volumes:
+      - ./.env:/usr/src/app/.env
+    command: node index.js
