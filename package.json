@@ -4,7 +4,11 @@
   "description": "A Node.js bot for automated standup meetings on Rocket.Chat.",
   "main": "index.js",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
   },
   "dependencies": {
     "@rocket.chat/sdk": "^0.2.9-2",

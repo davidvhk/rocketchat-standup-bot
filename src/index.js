@@ -338,6 +338,23 @@ const askNextQuestion = async (userId, userResponse) => {
 };
 
 /**
+ * Retrieves the standup record for a user for the current calendar day.
+ * @param {string} userId The user's ID.
+ * @returns {Promise<object|null>} The standup document or null if none exists.
+ */
+const getStandupForToday = async (userId) => {
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59, 999);
+
+  return await Standup.findOne({
+    userId: userId,
+    date: { $gte: startOfDay, $lte: endOfDay }
+  });
+};
+
+/**
  * Prompts all users in the standup channel with the questions.
  */
 const promptUsersForStandup = async () => {
@@ -351,10 +368,33 @@ const promptUsersForStandup = async () => {
 
     if (validMembers && validMembers.length > 0) {
       for (const member of validMembers) {
+        console.log(`[promptUsersForStandup] Checking existing status for member: ${member.username}`);
         
+        // 1. Check if they already have an entry for today
+        const existingStandup = await getStandupForToday(member._id);
+        
+        if (existingStandup) {
+          if (existingStandup.status === 'answered' || existingStandup.status === 'skipped') {
+            console.log(`[promptUsersForStandup] User @${member.username} has already ${existingStandup.status} today. Skipping.`);
+            continue;
+          } else if (existingStandup.status === 'pending') {
+            console.log(`[promptUsersForStandup] User @${member.username} has a pending standup. Resuming.`);
+            // Restore progress into memory
+            const userSession = {
+              username: member.username,
+              answers: existingStandup.answers.map(a => a.answer),
+              status: 'pending',
+              dbId: existingStandup._id
+            };
+            standupResponses.set(member._id, userSession);
+            await askNextQuestion(member._id, userSession);
+            continue;
+          }
+        }
+
         console.log(`[promptUsersForStandup] Preparing to prompt member: ${member.username}`);
         
-        // Initialize the user's entry in our temporary store (for tracking index)
+        // Initialize the user's entry in our temporary store
         const userSession = {
           username: member.username,
           answers: [],
@@ -455,11 +495,14 @@ const processStandupResponse = async (message) => {
   if (cleanText === 'status') {
     const isMember = VALID_STANDUP_MEMBERS.some(m => m._id === userId);
     const session = standupResponses.get(userId);
+    const dbEntry = await getStandupForToday(userId);
+
     let statusMsg = `*Bot Status Check*\n`;
     statusMsg += `- Your Username: @${username}\n`;
     statusMsg += `- Your User ID: ${userId}\n`;
     statusMsg += `- Is Standup Member: ${isMember ? 'Yes ✅' : 'No ❌'}\n`;
     statusMsg += `- Active Session: ${session ? `Yes (${session.status})` : 'None'}\n`;
+    statusMsg += `- Today's DB Record: ${dbEntry ? `${dbEntry.status} ✅` : 'None ❌'}\n`;
     statusMsg += `- Bot Local Time: ${new Date().toString()}\n`;
     statusMsg += `- Configured Schedule: ${STANDUP_TIME}\n`;
     
@@ -482,13 +525,29 @@ const processStandupResponse = async (message) => {
       return;
     }
 
-    if (userSession && (userSession.status === 'answered' || userSession.status === 'skipped')) {
-      await sendDirectMessage({ _id: userId, username: username }, 'You have already completed or skipped today\'s standup.');
-      return;
+    // Check database for existing record today
+    const existingStandup = await getStandupForToday(userId);
+    
+    if (existingStandup) {
+      if (existingStandup.status === 'answered' || existingStandup.status === 'skipped') {
+        await sendDirectMessage({ _id: userId, username: username }, `You have already ${existingStandup.status} today's standup.`);
+        return;
+      }
+      
+      if (existingStandup.status === 'pending' && !userSession) {
+        console.log(`[Manual Trigger] Resuming pending session for @${username}`);
+        userSession = {
+          username: username,
+          answers: existingStandup.answers.map(a => a.answer),
+          status: 'pending',
+          dbId: existingStandup._id
+        };
+        standupResponses.set(userId, userSession);
+      }
     }
 
     if (!userSession) {
-      console.log(`[Manual Trigger] Initializing session for @${username}`);
+      console.log(`[Manual Trigger] Initializing new session for @${username}`);
       userSession = {
         username: username,
         answers: [],
@@ -606,5 +665,17 @@ const start = async () => {
 };
 
 // Launch the application
-start();
+if (require.main === module) {
+  start();
+}
+
+// Export for testing
+module.exports = {
+  getStandupForToday,
+  promptUsersForStandup,
+  processStandupResponse,
+  standupResponses,
+  Standup,
+  VALID_STANDUP_MEMBERS
+};
 
