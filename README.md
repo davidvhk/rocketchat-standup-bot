@@ -1,87 +1,126 @@
-# **Rocket.Chat Standup Bot 🤖**
+# Rocket.Chat Standup Bot 🤖
 
-A Node.js bot for Rocket.Chat that automates daily standup meetings by prompting specific users for their status and publishing a summary to a designated channel.
+A robust Node.js bot for Rocket.Chat that automates daily standup meetings. It prompts specific users for their status, tracks progress persistently using MongoDB, and publishes a consolidated summary to a designated channel.
 
-This bot is designed to run in a Docker container, allowing for easy deployment and management.
+## ✨ Features
 
-### **Prerequisites**
+- **Automated Prompting**: Schedules standups via cron expressions.
+- **Persistent Sessions**: MongoDB integration ensures progress is saved even if the bot restarts.
+- **One Standup Per Day**: Strict validation to prevent duplicate submissions.
+- **Manual Triggers**: Start your standup manually if you missed the prompt.
+- **Diagnostic Commands**: Built-in `ping` and `status` for troubleshooting.
+- **Docker Ready**: Easy deployment with Docker and Docker Compose.
+- **CI/CD Verified**: Automated testing suite using Jest.
 
-To run this bot, you'll need the following installed:
+---
 
-* [Node.js](https://nodejs.org/) (for local development)  
-* [npm](https://www.npmjs.com/) (installed with Node.js)  
-* [Docker](https://www.docker.com/)  
-* [Docker Compose](https://docs.docker.com/compose/)
+## 🚀 Getting Started
 
-### **Configuration**
+### Prerequisites
 
-All of the bot's configuration is managed through a **.env** file.
+- [Node.js](https://nodejs.org/) (v18+)
+- [Docker](https://www.docker.com/) & [Docker Compose](https://docs.docker.com/compose/)
+- A [Rocket.Chat](https://rocket.chat/) instance and bot credentials.
+- [MongoDB](https://www.mongodb.com/) (included in the Docker Compose setup).
 
-1. Create your configuration file by moving the provided example:  
-   mv .env-example .env
+### Configuration
 
-2. Open **.env** in a text editor and fill in the values for your Rocket.Chat instance:  
-   \# .env  
-   \# Rocket.Chat URL, including the protocol (e.g., http:// or https://)  
-   ROCKETCHAT\_URL=https://your-rocketchat-domain.com
+The bot is configured via environment variables. Create a `.env` file from the example:
 
-   \# Bot user credentials  
-   BOT\_USERNAME=your\_bot\_username  
-   BOT\_PASSWORD=your\_bot\_password
+```bash
+cp .env-example .env
+```
 
-   \# A comma-separated list of usernames that will participate in the standup.  
-   \# The bot user should not be included in this list.  
-   STANDUP\_USERS=dvanhoucke,johndoe,janedoe
+Edit the `.env` file with your specific settings:
 
-   \# The name of the channel where the summary should be posted.  
-   SUMMARY\_CHANNEL\_NAME=your\_summary\_channel\_name
+| Variable | Description | Example |
+| :--- | :--- | :--- |
+| `ROCKETCHAT_URL` | Your Rocket.Chat instance URL | `https://chat.mycompany.com` |
+| `BOT_USERNAME` | The username of the bot account | `standup.bot` |
+| `BOT_PASSWORD` | The password for the bot account | `mypassword` |
+| `STANDUP_USERS` | Comma-separated usernames to prompt | `alice,bob,charlie` |
+| `SUMMARY_CHANNEL_NAME` | Channel where summaries are posted | `team-standup` |
+| `STANDUP_TIME` | Cron schedule for the prompt | `0 9 * * 1-5` (9 AM weekdays) |
+| `QUESTIONS` | Semicolon-separated questions | `Work yesterday?;Work today?;Blockers?` |
+| `MONGODB_URI` | MongoDB connection string | `mongodb://mongodb:27017/standupbot` |
+| `SUMMARY_TIMEOUT_MINUTES`| Minutes to wait before posting summary | `30` |
 
-   \# The cron schedule for when to prompt the standup.  
-   \# Format: 'minute hour day\_of\_month month day\_of\_week'  
-   \# '0 9 \* \* 1-5' means 9:00 AM on weekdays (Monday to Friday)  
-   STANDUP\_TIME=0 9 \* \* 1-5
+---
 
-   \# The questions to ask the users. Separate each question with a semicolon.  
-      # The questions to ask the users. Separate each question with a semicolon.  
-   QUESTIONS=What did you work on yesterday?;What are you working on today?;Do you have any blockers?
+## 🛠️ Deployment
 
-   # The timeout in minutes to wait for the standup summary.
-   SUMMARY_TIMEOUT_MINUTES=30
+### Using Docker Compose (Recommended)
 
-   # The MongoDB connection URI.
-   MONGODB_URI=mongodb://mongodb:27017/standupbot
+The easiest way to run the bot along with a MongoDB instance:
 
-### **Building the Docker Image**
+1. **Start the services**:
+   ```bash
+   docker-compose up -d
+   ```
+2. **View logs**:
+   ```bash
+   docker-compose logs -f standup-bot
+   ```
+3. **Stop the services**:
+   ```bash
+   docker-compose down
+   ```
 
-From the root directory of the project (where the Dockerfile is located), build the Docker image using the following command:
+### Manual Installation (Development)
 
-docker build \-t rocketchat-standup-bot .
+1. **Install dependencies**:
+   ```bash
+   npm install
+   ```
+2. **Run tests**:
+   ```bash
+   npm test
+   ```
+3. **Start the bot**:
+   ```bash
+   npm start
+   ```
 
-This command builds the image and tags it with the name rocketchat-standup-bot.
+---
 
-### **Running with Docker Compose**
+## 💬 Commands
 
-Use the provided docker-compose.yml file to easily run and manage your bot. This file mounts your external **.env** file into the container, so you can change configurations without rebuilding the image. Update the variable TZ to your timezone.
+Direct message the bot with these commands:
 
-To start the bot, run the following command from the project root:
+- `ping`: Check if the bot is responsive.
+- `status`: Get a diagnostic report of your membership status, current session, and daily participation.
+- `start standup`: Manually initiate your standup session for the day.
+- `skip`: Opt-out of the current standup session.
 
-docker-compose up \-d
+---
 
-This command starts the bot in detached mode (-d), allowing it to run in the background.
+## 🧠 How it Works
 
-To stop the bot, use:
+### Session Persistence
+The bot uses MongoDB to track standup participation. If a user starts a standup but doesn't finish, or if the bot restarts mid-session, the user can resume exactly where they left off by typing `start standup`.
 
-docker-compose down
+### Daily Validation
+Users are limited to one standup submission per calendar day. This prevents duplicate entries in the summary channel and ensures data integrity.
 
-To restart the bot after making changes to your **.env** file, use:
+### Summary Posting
+Once all active participants have completed their responses or the `SUMMARY_TIMEOUT_MINUTES` has elapsed, the bot compiles all answers into a clean, formatted message and posts it to the configured summary channel.
 
-docker-compose restart standup-bot  
+---
 
-### **Commands**
+## 🧪 Testing
 
-The bot responds to the following direct messages:
+The project uses **Jest** for unit testing. The test suite mocks Rocket.Chat and MongoDB dependencies to verify:
+- Logic for daily boundary checks.
+- Command parsing and response.
+- Session resumption logic.
 
-*   **ping**: Check if the bot is online. It will respond with a "Pong!".
-*   **status**: Displays your current status, including whether you are an active standup member and if you have a session in progress.
-*   **start standup**: Manually trigger the standup process for yourself if you are an active member.
-*   **skip**: During a standup session, you can type 'skip' to skip your response for the day.
+Run tests locally:
+```bash
+npm test
+```
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
