@@ -3,13 +3,27 @@
 # It mounts the .env file as a volume for easy configuration without rebuilding the image.
 
 version: '3.8'
-
 services:
   standup-bot:
     image: rocketchat-standup-bot
     restart: always
     environment:
       - TZ=Europe/London
+      - NODE_EXTRA_CA_CERTS
+      - MONGODB_URI=mongodb://mongodb:27017/standup-bot
     volumes:
       - ./.env:/usr/src/app/.env
     command: node index.js
+    depends_on:
+      - mongodb
+
+  mongodb:
+    image: mongo:latest
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+
+volumes:
+  mongodb_data:

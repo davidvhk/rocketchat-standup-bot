@@ -48,6 +48,9 @@ All of the bot's configuration is managed through a **.env** file.
    # The timeout in minutes to wait for the standup summary.
    SUMMARY_TIMEOUT_MINUTES=30
 
+   # The MongoDB connection URI.
+   MONGODB_URI=mongodb://mongodb:27017/standupbot
+
 ### **Building the Docker Image**
 
 From the root directory of the project (where the Dockerfile is located), build the Docker image using the following command:
@@ -73,3 +76,12 @@ docker-compose down
 To restart the bot after making changes to your **.env** file, use:
 
 docker-compose restart standup-bot  
+
+### **Commands**
+
+The bot responds to the following direct messages:
+
+*   **ping**: Check if the bot is online. It will respond with a "Pong!".
+*   **status**: Displays your current status, including whether you are an active standup member and if you have a session in progress.
+*   **start standup**: Manually trigger the standup process for yourself if you are an active member.
+*   **skip**: During a standup session, you can type 'skip' to skip your response for the day.
