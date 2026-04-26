@@ -73,6 +73,7 @@ const STANDUP_USERS = (process.env.STANDUP_USERS || '').split(',').map(user => u
 const SUMMARY_CHANNEL_NAME = process.env.SUMMARY_CHANNEL_NAME;
 const STANDUP_TIME = process.env.STANDUP_TIME || '0 9 * * 1-5'; // Default to 9:00 AM on weekdays
 const QUESTIONS_ARRAY = (process.env.QUESTIONS || '').split(';').map(q => q.trim()).filter(Boolean);
+const ADMIN_USERS = (process.env.ADMIN_USERS || '').split(',').map(user => user.trim()).filter(Boolean);
 const SUMMARY_TIMEOUT_MINUTES = parseInt(process.env.SUMMARY_TIMEOUT_MINUTES, 10) || 30;
 const MONGODB_URI = process.env.MONGODB_URI;
 
@@ -85,6 +86,7 @@ if (!MONGODB_URI) {
 let SUMMARY_CHANNEL_ID;
 let BOT_USER_ID;
 let VALID_STANDUP_MEMBERS = [];
+let ADMIN_USER_IDS = [];
 
 // --- 4. Core Bot Functions ---
 
@@ -192,8 +194,26 @@ const connect = async () => {
         console.log(`[connect] User "${username}" not found. Skipping.`);
       }
     }
+
+    // Check for admin existence at startup
+    console.log(`[connect] Checking existence for admin users: ${ADMIN_USERS.join(', ')}`);
+    ADMIN_USER_IDS = []; // Reset to avoid duplicates on reconnect
+    const uniqueAdminUsernames = [...new Set(ADMIN_USERS)];
+
+    for (const username of uniqueAdminUsernames) {
+      console.log(`[connect] Looking up ID for admin user: ${username}`);
+      const userId = await getUserIdByUsername(username);
+      if (userId) {
+        console.log(`[connect] Found admin user ${username} with ID: ${userId}`);
+        if (!ADMIN_USER_IDS.includes(userId)) {
+          ADMIN_USER_IDS.push(userId);
+        }
+      } else {
+        console.log(`[connect] Admin user "${username}" not found. Skipping.`);
+      }
+    }
     
-    console.log(`[connect] Finished checking users. Valid members: ${VALID_STANDUP_MEMBERS.length}`);
+    console.log(`[connect] Finished checking users. Valid members: ${VALID_STANDUP_MEMBERS.length}, Admins: ${ADMIN_USER_IDS.length}`);
     
     // Set up the Realtime API listener after successful login
     console.log('Setting up Realtime API listener...');
@@ -355,6 +375,39 @@ const getStandupForToday = async (userId) => {
 };
 
 /**
+ * Loads all standup records for the current day from MongoDB into the in-memory store.
+ * This ensures the bot can resume sessions and generate accurate summaries after a restart.
+ */
+const loadTodaySessions = async () => {
+  console.log('[loadTodaySessions] Restoring today\'s sessions from MongoDB...');
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59, 999);
+
+  try {
+    const todaysStandups = await Standup.find({
+      date: { $gte: startOfDay, $lte: endOfDay }
+    });
+
+    console.log(`[loadTodaySessions] Found ${todaysStandups.length} records for today.`);
+
+    todaysStandups.forEach(record => {
+      const userSession = {
+        username: record.username,
+        answers: record.answers.map(a => a.answer),
+        status: record.status,
+        dbId: record._id
+      };
+      standupResponses.set(record.userId, userSession);
+      console.log(`[loadTodaySessions] Restored session for @${record.username} (${record.status})`);
+    });
+  } catch (error) {
+    console.error('[loadTodaySessions] Failed to load sessions:', error.message);
+  }
+};
+
+/**
  * Prompts all users in the standup channel with the questions.
  */
 const promptUsersForStandup = async () => {
@@ -444,7 +497,14 @@ const publishStandupSummary = async () => {
     hasContent = true;
   } else {
     for (const [userId, data] of standupResponses.entries()) {
-      if (data.status === 'skipped') {
+      if (data.status === 'answered') {
+        summaryText += `*@${data.username}*\n`;
+        data.answers.forEach((ans, i) => {
+          summaryText += `> *${QUESTIONS_ARRAY[i]}*\n${ans}\n`;
+        });
+        summaryText += '\n';
+        hasContent = true;
+      } else if (data.status === 'skipped') {
         summaryText += `@${data.username}: Skipped the standup.\n\n`;
         hasContent = true;
       } else if (data.status === 'pending') {
@@ -494,6 +554,7 @@ const processStandupResponse = async (message) => {
 
   if (cleanText === 'status') {
     const isMember = VALID_STANDUP_MEMBERS.some(m => m._id === userId);
+    const isAdmin = ADMIN_USER_IDS.includes(userId);
     const session = standupResponses.get(userId);
     const dbEntry = await getStandupForToday(userId);
 
@@ -501,6 +562,7 @@ const processStandupResponse = async (message) => {
     statusMsg += `- Your Username: @${username}\n`;
     statusMsg += `- Your User ID: ${userId}\n`;
     statusMsg += `- Is Standup Member: ${isMember ? 'Yes ✅' : 'No ❌'}\n`;
+    statusMsg += `- Is Admin: ${isAdmin ? 'Yes ⭐' : 'No'}\n`;
     statusMsg += `- Active Session: ${session ? `Yes (${session.status})` : 'None'}\n`;
     statusMsg += `- Today's DB Record: ${dbEntry ? `${dbEntry.status} ✅` : 'None ❌'}\n`;
     statusMsg += `- Bot Local Time: ${new Date().toString()}\n`;
@@ -512,6 +574,51 @@ const processStandupResponse = async (message) => {
     
     await sendDirectMessage({ _id: userId, username: username }, statusMsg);
     return;
+  }
+
+  if (cleanText === 'help') {
+    const isAdmin = ADMIN_USER_IDS.includes(userId);
+    let helpMsg = `*Available Commands* 🤖\n\n`;
+    helpMsg += `*User Commands:*\n`;
+    helpMsg += `- \`ping\`: Check if I'm online.\n`;
+    helpMsg += `- \`status\`: Check your membership and today's standup progress.\n`;
+    helpMsg += `- \`start standup\`: Manually start or resume your standup.\n`;
+    helpMsg += `- \`skip\`: Skip today's standup (during an active session).\n`;
+    helpMsg += `- \`help\`: Show this message.\n`;
+
+    if (isAdmin) {
+      helpMsg += `\n*Admin Commands:* 👑\n`;
+      helpMsg += `- \`force summary\`: Immediately post the final summary for all users.\n`;
+      helpMsg += `- \`list users\`: View all participants and their current status.\n`;
+    }
+
+    await sendDirectMessage({ _id: userId, username: username }, helpMsg);
+    return;
+  }
+
+  // --- Handle Admin Commands ---
+  const isAdmin = ADMIN_USER_IDS.includes(userId);
+  if (isAdmin) {
+    if (cleanText === 'force summary') {
+      console.log(`[Admin] @${username} triggered manual summary.`);
+      if (!SUMMARY_CHANNEL_ID) {
+        console.log('[Admin] SUMMARY_CHANNEL_ID not set, attempting to resolve...');
+        SUMMARY_CHANNEL_ID = await driver.getRoomId(SUMMARY_CHANNEL_NAME);
+      }
+      await sendDirectMessage({ _id: userId, username: username }, 'Acknowledged. Publishing final standup summary now...');
+      await publishStandupSummary();
+      return;
+    }
+
+    if (cleanText === 'list users') {
+      let listMsg = `*Active Standup Members (${VALID_STANDUP_MEMBERS.length}):*\n`;
+      VALID_STANDUP_MEMBERS.forEach(m => {
+        const session = standupResponses.get(m._id);
+        listMsg += `- @${m.username} (ID: ${m._id}) [Session: ${session ? session.status : 'None'}]\n`;
+      });
+      await sendDirectMessage({ _id: userId, username: username }, listMsg);
+      return;
+    }
   }
 
   // Handle Standup Logic
@@ -633,8 +740,11 @@ const start = async () => {
   try {
     // 1. Connect and initialize everything
     await connect();
+
+    // 2. Load existing sessions for today from DB
+    await loadTodaySessions();
     
-    // 2. Schedule the daily standup
+    // 3. Schedule the daily standup
     let cronPattern = STANDUP_TIME.replace('1-7', '*');
     
     // Ensure 6 fields (seconds minute hour dom month dow)
@@ -672,10 +782,12 @@ if (require.main === module) {
 // Export for testing
 module.exports = {
   getStandupForToday,
+  loadTodaySessions,
   promptUsersForStandup,
   processStandupResponse,
   standupResponses,
   Standup,
-  VALID_STANDUP_MEMBERS
+  VALID_STANDUP_MEMBERS,
+  ADMIN_USER_IDS
 };
 

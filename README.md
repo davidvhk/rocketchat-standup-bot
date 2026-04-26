@@ -42,6 +42,7 @@ Edit the `.env` file with your specific settings:
 | `SUMMARY_CHANNEL_NAME` | Channel where summaries are posted | `team-standup` |
 | `STANDUP_TIME` | Cron schedule for the prompt | `0 9 * * 1-5` (9 AM weekdays) |
 | `QUESTIONS` | Semicolon-separated questions | `Work yesterday?;Work today?;Blockers?` |
+| `ADMIN_USERS` | Comma-separated usernames with admin rights | `david,admin.user` |
 | `MONGODB_URI` | MongoDB connection string | `mongodb://mongodb:27017/standupbot` |
 | `SUMMARY_TIMEOUT_MINUTES`| Minutes to wait before posting summary | `30` |
 
@@ -85,12 +86,19 @@ The easiest way to run the bot along with a MongoDB instance:
 
 ## 💬 Commands
 
+### User Commands
 Direct message the bot with these commands:
 
 - `ping`: Check if the bot is responsive.
 - `status`: Get a diagnostic report of your membership status, current session, and daily participation.
 - `start standup`: Manually initiate your standup session for the day.
 - `skip`: Opt-out of the current standup session.
+
+### Admin Commands 👑
+Users listed in `ADMIN_USERS` can also use:
+
+- `force summary`: Immediately compile and post the standup summary to the summary channel.
+- `list users`: View all active standup members and their current session status.
 
 ---
 
