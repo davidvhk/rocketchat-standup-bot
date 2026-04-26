@@ -69,10 +69,10 @@ const cacheMessageId = (id) => {
 const ROCKCHAT_URL = process.env.ROCKETCHAT_URL;
 const BOT_USERNAME = process.env.BOT_USERNAME;
 const BOT_PASSWORD = process.env.BOT_PASSWORD;
-const STANDUP_USERS = process.env.STANDUP_USERS.split(',').map(user => user.trim());
+const STANDUP_USERS = (process.env.STANDUP_USERS || '').split(',').map(user => user.trim()).filter(Boolean);
 const SUMMARY_CHANNEL_NAME = process.env.SUMMARY_CHANNEL_NAME;
 const STANDUP_TIME = process.env.STANDUP_TIME || '0 9 * * 1-5'; // Default to 9:00 AM on weekdays
-const QUESTIONS_ARRAY = process.env.QUESTIONS.split(';').map(q => q.trim());
+const QUESTIONS_ARRAY = (process.env.QUESTIONS || '').split(';').map(q => q.trim()).filter(Boolean);
 const SUMMARY_TIMEOUT_MINUTES = parseInt(process.env.SUMMARY_TIMEOUT_MINUTES, 10) || 30;
 const MONGODB_URI = process.env.MONGODB_URI;
 

@@ -1,3 +1,8 @@
+// Set environment variables for tests
+process.env.MONGODB_URI = 'mongodb://localhost:27017/test';
+process.env.STANDUP_USERS = 'member1,member2';
+process.env.QUESTIONS = 'Q1;Q2';
+
 const { 
   getStandupForToday, 
   processStandupResponse, 
