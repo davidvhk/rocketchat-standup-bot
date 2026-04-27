@@ -10,6 +10,8 @@ const {
   processStandupResponse, 
   standupResponses, 
   Standup, 
+  Vacation,
+  isUserOnVacation,
   VALID_STANDUP_MEMBERS,
   ADMIN_USER_IDS
 } = require('../src/index');
@@ -19,13 +21,14 @@ jest.mock('mongoose', () => {
   const m = {
     connect: jest.fn(),
     Schema: jest.fn().mockImplementation(() => ({ index: jest.fn() })),
-    model: jest.fn().mockReturnValue({
-      findOne: jest.fn(),
-      find: jest.fn(),
-      deleteOne: jest.fn(),
-      findByIdAndUpdate: jest.fn(),
-      prototype: { save: jest.fn() }
-    }),
+    model: jest.fn().mockImplementation(() => ({
+      findOne: jest.fn().mockResolvedValue(null),
+      find: jest.fn().mockResolvedValue([]),
+      deleteOne: jest.fn().mockResolvedValue({ deletedCount: 0 }),
+      findByIdAndUpdate: jest.fn().mockResolvedValue({}),
+      findOneAndUpdate: jest.fn().mockResolvedValue({}),
+      prototype: { save: jest.fn().mockResolvedValue({}) }
+    })),
     findByIdAndUpdate: jest.fn()
   };
   return m;
@@ -329,6 +332,45 @@ describe('Standup Bot Logic', () => {
       );
     });
 
+    it('should allow admin to show historical standup', async () => {
+      const { driver, api } = require('@rocket.chat/sdk');
+      // Mock user lookup
+      api.get.mockResolvedValue({ user: { _id: 'user1', username: 'user1' } });
+      // Mock historical record
+      const mockRecord = {
+        userId: 'user1',
+        username: 'user1',
+        status: 'answered',
+        answers: [{ question: 'Q1', answer: 'Old Answer' }],
+        _id: 'old_dbid'
+      };
+      jest.spyOn(Standup, 'findOne').mockResolvedValue(mockRecord);
+      // Mock DM room creation for the admin
+      api.post.mockResolvedValue({ room: { _id: 'admin_dm_room' } });
+      
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'show standup @user1 2026-04-20',
+        _id: 'msg_show'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(Standup.findOne).toHaveBeenCalledWith(expect.objectContaining({
+        userId: 'user1',
+        date: expect.any(Object)
+      }));
+      expect(api.post).toHaveBeenCalledWith(
+        'chat.postMessage',
+        expect.objectContaining({
+          attachments: expect.arrayContaining([
+            expect.objectContaining({ text: expect.stringContaining('Historical Standup for @user1') }),
+            expect.objectContaining({ text: 'Old Answer' })
+          ])
+        })
+      );
+    });
+
     it('should reject admin commands from non-admins', async () => {
       const mockMessage = {
         u: { _id: 'user1', username: 'user1' },
@@ -341,6 +383,101 @@ describe('Standup Bot Logic', () => {
       // Should not trigger the admin response
       expect(driver.sendToRoomId).not.toHaveBeenCalledWith(
         expect.stringContaining('Publishing final standup summary now'),
+        expect.any(String)
+      );
+    });
+  });
+
+  describe('Vacation Logic', () => {
+    const { driver, api } = require('@rocket.chat/sdk');
+
+    it('should allow user to set vacation', async () => {
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+      const findOneAndUpdateSpy = jest.spyOn(Vacation, 'findOneAndUpdate').mockResolvedValue({});
+      
+      const mockMessage = {
+        u: { _id: 'user1', username: 'user1' },
+        msg: 'vacation 2026-05-01 2026-05-10',
+        _id: 'msg_vacation'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(findOneAndUpdateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'user1' }),
+        expect.objectContaining({
+          startDate: expect.any(Date),
+          endDate: expect.any(Date)
+        }),
+        expect.any(Object)
+      );
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Vacation set from 2026-05-01 to 2026-05-10'),
+        expect.any(String)
+      );
+    });
+
+    it('should show current vacation', async () => {
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+      Vacation.findOne.mockResolvedValue({
+        userId: 'user1',
+        startDate: new Date('2026-05-01'),
+        endDate: new Date('2026-05-10')
+      });
+      
+      const mockMessage = {
+        u: { _id: 'user1', username: 'user1' },
+        msg: 'show vacation',
+        _id: 'msg_show_vacation'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('*2026-05-01* to *2026-05-10*'),
+        expect.any(String)
+      );
+    });
+
+    it('should allow user to clear vacation', async () => {
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+      
+      const mockMessage = {
+        u: { _id: 'user1', username: 'user1' },
+        msg: 'clear vacation',
+        _id: 'msg_clear_vac'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(Vacation.deleteOne).toHaveBeenCalledWith({ userId: 'user1' });
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('vacation period has been cleared'),
+        expect.any(String)
+      );
+    });
+
+    it('should reject starting standup if on vacation', async () => {
+      VALID_STANDUP_MEMBERS.push({ _id: 'user1', username: 'user1' });
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+      
+      // Mock being on vacation
+      Vacation.findOne.mockResolvedValue({
+        userId: 'user1',
+        startDate: new Date('2026-01-01'),
+        endDate: new Date('2026-12-31')
+      });
+
+      const mockMessage = {
+        u: { _id: 'user1', username: 'user1' },
+        msg: 'start standup',
+        _id: 'msg_start_vacation'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('currently marked as on vacation'),
         expect.any(String)
       );
     });

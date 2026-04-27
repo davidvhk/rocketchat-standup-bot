@@ -48,6 +48,16 @@ standupSchema.index({ userId: 1, date: -1 });
 
 const Standup = mongoose.model('Standup', standupSchema);
 
+// Schema for user vacations
+const vacationSchema = new mongoose.Schema({
+  userId: { type: String, required: true },
+  username: { type: String, required: true },
+  startDate: { type: Date, required: true },
+  endDate: { type: Date, required: true }
+});
+
+const Vacation = mongoose.model('Vacation', vacationSchema);
+
 // A simple in-memory store to hold standup responses for the current day.
 const standupResponses = new Map();
 
@@ -305,16 +315,14 @@ const sendDirectMessage = async (member, text) => {
     
     // Create a DM room with the user's username
     const imCreateResult = await api.post('im.create', { username: member.username });
-    console.log(`[sendDirectMessage] im.create result:`, JSON.stringify(imCreateResult));
 
     if (!imCreateResult || !imCreateResult.room) {
       throw new Error(`Failed to create DM room for ${member.username}`);
     }
     const dmRoomId = imCreateResult.room._id;
-    console.log(`[sendDirectMessage] Target DM Room ID: ${dmRoomId}`);
 
     // Now send the message to the created/found DM room
-    const result = await driver.sendToRoomId(text, dmRoomId);
+    await driver.sendToRoomId(text, dmRoomId);
     console.log(`[sendDirectMessage] Message sent successfully to ${member.username}`);
   } catch (error) {
     console.error(`[sendDirectMessage] Error:`, error.message);
@@ -404,6 +412,24 @@ const askNextQuestion = async (userId, userResponse) => {
 };
 
 /**
+ * Checks if a user is currently on vacation.
+ * @param {string} userId The user's ID.
+ * @returns {Promise<boolean>} True if the user is on vacation today.
+ */
+const isUserOnVacation = async (userId) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const vacation = await Vacation.findOne({
+    userId: userId,
+    startDate: { $lte: today },
+    endDate: { $gte: today }
+  });
+
+  return !!vacation;
+};
+
+/**
  * Retrieves the standup record for a user for the current calendar day.
  * @param {string} userId The user's ID.
  * @returns {Promise<object|null>} The standup document or null if none exists.
@@ -489,6 +515,28 @@ const promptUsersForStandup = async () => {
             await askNextQuestion(member._id, userSession);
             continue;
           }
+        }
+
+        // 2. Check for vacation
+        const onVacation = await isUserOnVacation(member._id);
+        if (onVacation) {
+          console.log(`[promptUsersForStandup] User @${member.username} is on vacation. Automatically skipping.`);
+          const userSession = {
+            username: member.username,
+            answers: [],
+            status: 'skipped'
+          };
+          standupResponses.set(member._id, userSession);
+
+          const standup = new Standup({
+            userId: member._id,
+            username: member.username,
+            status: 'skipped',
+            answers: [{ question: 'Auto-skipped', answer: 'On vacation 🌴' }]
+          });
+          await standup.save();
+          userSession.dbId = standup._id;
+          continue;
         }
 
         console.log(`[promptUsersForStandup] Preparing to prompt member: ${member.username}`);
@@ -586,6 +634,33 @@ const publishStandupSummary = async () => {
 };
 
 /**
+ * Generates the help message based on user permissions.
+ * @param {boolean} isAdmin Whether the user is an admin.
+ * @returns {string} The formatted help message.
+ */
+const getHelpMessage = (isAdmin) => {
+  let helpMsg = `*Available Commands* 🤖\n\n`;
+  helpMsg += `*User Commands:*\n`;
+  helpMsg += `- \`ping\`: Check if I'm online.\n`;
+  helpMsg += `- \`status\`: Check your membership and today's standup progress.\n`;
+  helpMsg += `- \`start standup\`: Manually start or resume your standup.\n`;
+  helpMsg += `- \`skip\`: Skip today's standup (during an active session).\n`;
+  helpMsg += `- \`vacation YYYY-MM-DD YYYY-MM-DD\`: Schedule a vacation period.\n`;
+  helpMsg += `- \`show vacation\`: View your scheduled vacation.\n`;
+  helpMsg += `- \`clear vacation\`: Remove your vacation schedule.\n`;
+  helpMsg += `- \`help\`: Show this message.\n`;
+
+  if (isAdmin) {
+    helpMsg += `\n*Admin Commands:* 👑\n`;
+    helpMsg += `- \`force summary\`: Immediately post the final summary for all users.\n`;
+    helpMsg += `- \`list users\`: View all participants and their current status.\n`;
+    helpMsg += `- \`delete standup @username\`: Delete today's entry for a user so they can redo it.\n`;
+    helpMsg += `- \`show standup @username YYYY-MM-DD\`: View a specific historical standup entry.\n`;
+  }
+  return helpMsg;
+};
+
+/**
  * Process incoming DM messages and them as standup responses.
  * @param {object} message The message object from the Realtime API.
  */
@@ -605,9 +680,12 @@ const processStandupResponse = async (message) => {
 
   console.log(`[Message Received] From @${username}: "${text}"`);
 
-  // Handle Diagnostic Commands
+  // Handle Commands
   const cleanText = text.toLowerCase().trim();
-  
+  const isAdmin = ADMIN_USER_IDS.includes(userId);
+  let commandMatched = false;
+
+  // 1. Diagnostic / Help Commands
   if (cleanText === 'ping') {
     await sendDirectMessage({ _id: userId, username: username }, 'Pong! 🏓 I am alive and listening.');
     return;
@@ -615,7 +693,6 @@ const processStandupResponse = async (message) => {
 
   if (cleanText === 'status') {
     const isMember = VALID_STANDUP_MEMBERS.some(m => m._id === userId);
-    const isAdmin = ADMIN_USER_IDS.includes(userId);
     const session = standupResponses.get(userId);
     const dbEntry = await getStandupForToday(userId);
 
@@ -638,33 +715,85 @@ const processStandupResponse = async (message) => {
   }
 
   if (cleanText === 'help') {
-    const isAdmin = ADMIN_USER_IDS.includes(userId);
-    let helpMsg = `*Available Commands* 🤖\n\n`;
-    helpMsg += `*User Commands:*\n`;
-    helpMsg += `- \`ping\`: Check if I'm online.\n`;
-    helpMsg += `- \`status\`: Check your membership and today's standup progress.\n`;
-    helpMsg += `- \`start standup\`: Manually start or resume your standup.\n`;
-    helpMsg += `- \`skip\`: Skip today's standup (during an active session).\n`;
-    helpMsg += `- \`help\`: Show this message.\n`;
-
-    if (isAdmin) {
-      helpMsg += `\n*Admin Commands:* 👑\n`;
-      helpMsg += `- \`force summary\`: Immediately post the final summary for all users.\n`;
-      helpMsg += `- \`list users\`: View all participants and their current status.\n`;
-      helpMsg += `- \`delete standup @username\`: Delete today's entry for a user so they can redo it.\n`;
-    }
-
-    await sendDirectMessage({ _id: userId, username: username }, helpMsg);
+    await sendDirectMessage({ _id: userId, username: username }, getHelpMessage(isAdmin));
     return;
   }
 
-  // --- Handle Admin Commands ---
-  const isAdmin = ADMIN_USER_IDS.includes(userId);
+  // 2. Vacation Commands
+  if (cleanText.startsWith('vacation')) {
+    commandMatched = true;
+    const parts = text.split(' ').filter(p => p.trim() !== '');
+    if (parts.length < 3) {
+      await sendDirectMessage({ _id: userId, username: username }, '❌ Usage: `vacation YYYY-MM-DD YYYY-MM-DD` (Start and End date inclusive).');
+      return;
+    }
+
+    const startStr = parts[1];
+    const endStr = parts[2];
+    const startDate = new Date(startStr);
+    const endDate = new Date(endStr);
+
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+      await sendDirectMessage({ _id: userId, username: username }, '❌ Invalid date format. Please use YYYY-MM-DD.');
+      return;
+    }
+
+    if (startDate > endDate) {
+      await sendDirectMessage({ _id: userId, username: username }, '❌ Start date cannot be after end date.');
+      return;
+    }
+
+    try {
+      await Vacation.findOneAndUpdate(
+        { userId: userId },
+        { userId: userId, username: username, startDate: startDate, endDate: endDate },
+        { upsert: true, new: true }
+      );
+      await sendDirectMessage({ _id: userId, username: username }, `Vacation set from ${startStr} to ${endStr}. I will automatically skip your standups during this period. ✅`);
+    } catch (err) {
+      console.error('[Vacation] Save failed:', err.message);
+      await sendDirectMessage({ _id: userId, username: username }, `Error setting vacation: ${err.message}`);
+    }
+    return;
+  }
+
+  if (cleanText === 'show vacation') {
+    commandMatched = true;
+    try {
+      const vacation = await Vacation.findOne({ userId: userId });
+      if (vacation) {
+        const startStr = vacation.startDate.toISOString().split('T')[0];
+        const endStr = vacation.endDate.toISOString().split('T')[0];
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const isActive = today >= vacation.startDate && today <= vacation.endDate;
+        await sendDirectMessage({ _id: userId, username: username }, `Your scheduled vacation: *${startStr}* to *${endStr}* ${isActive ? '(Currently Active 🌴)' : '(Upcoming/Past)'}\n\nTo clear it, type \`clear vacation\`.`);
+      } else {
+        await sendDirectMessage({ _id: userId, username: username }, 'You have no vacation periods scheduled.');
+      }
+    } catch (err) {
+      console.error('[Vacation] Show failed:', err.message);
+    }
+    return;
+  }
+
+  if (cleanText === 'clear vacation') {
+    commandMatched = true;
+    try {
+      await Vacation.deleteOne({ userId: userId });
+      await sendDirectMessage({ _id: userId, username: username }, 'Your vacation period has been cleared. 🏠');
+    } catch (err) {
+      console.error('[Vacation] Clear failed:', err.message);
+    }
+    return;
+  }
+
+  // 3. Admin Commands
   if (isAdmin) {
     if (cleanText === 'force summary') {
+      commandMatched = true;
       console.log(`[Admin] @${username} triggered manual summary.`);
       if (!SUMMARY_CHANNEL_ID) {
-        console.log('[Admin] SUMMARY_CHANNEL_ID not set, attempting to resolve...');
         SUMMARY_CHANNEL_ID = await driver.getRoomId(SUMMARY_CHANNEL_NAME);
       }
       await sendDirectMessage({ _id: userId, username: username }, 'Acknowledged. Publishing final standup summary now...');
@@ -673,6 +802,7 @@ const processStandupResponse = async (message) => {
     }
 
     if (cleanText === 'list users') {
+      commandMatched = true;
       let listMsg = `*Active Standup Members (${VALID_STANDUP_MEMBERS.length}):*\n`;
       VALID_STANDUP_MEMBERS.forEach(m => {
         const session = standupResponses.get(m._id);
@@ -682,19 +812,23 @@ const processStandupResponse = async (message) => {
       return;
     }
 
-    if (cleanText.startsWith('delete standup ')) {
-      const targetUsername = text.replace(/delete standup /i, '').replace(/^@/, '').trim();
-      console.log(`[Admin] @${username} is deleting standup for @${targetUsername}`);
-
+    if (cleanText.startsWith('delete standup')) {
+      commandMatched = true;
+      const parts = text.split(' ').filter(p => p.trim() !== '');
+      if (parts.length < 3) {
+        await sendDirectMessage({ _id: userId, username: username }, '❌ Usage: `delete standup @username`');
+        return;
+      }
+      
+      const targetUsername = parts[2].replace(/^@/, '');
+      
       try {
-        // 1. Find user ID from username
         const targetUserId = await getUserIdByUsername(targetUsername);
         if (!targetUserId) {
           await sendDirectMessage({ _id: userId, username: username }, `Could not find user @${targetUsername}`);
           return;
         }
 
-        // 2. Delete today's record from MongoDB
         const startOfDay = new Date();
         startOfDay.setHours(0, 0, 0, 0);
         const endOfDay = new Date();
@@ -705,38 +839,93 @@ const processStandupResponse = async (message) => {
           date: { $gte: startOfDay, $lte: endOfDay }
         });
 
-        // 3. Clear from memory
         standupResponses.delete(targetUserId);
         lastSentQuestionIndex.delete(targetUserId);
 
         if (deleteResult.deletedCount > 0) {
           await sendDirectMessage({ _id: userId, username: username }, `Successfully deleted today's standup for @${targetUsername}. They can now start over.`);
-          console.log(`[Admin] Successfully deleted standup for @${targetUsername}`);
         } else {
           await sendDirectMessage({ _id: userId, username: username }, `No standup found for @${targetUsername} today.`);
         }
       } catch (err) {
-        console.error(`[Admin] Delete failed:`, err.message);
         await sendDirectMessage({ _id: userId, username: username }, `Error deleting standup: ${err.message}`);
+      }
+      return;
+    }
+
+    if (cleanText.startsWith('show standup')) {
+      commandMatched = true;
+      const parts = text.split(' ').filter(p => p.trim() !== '');
+      if (parts.length < 4) {
+        await sendDirectMessage({ _id: userId, username: username }, '❌ Usage: `show standup @username YYYY-MM-DD`');
+        return;
+      }
+
+      const targetUsername = parts[2].replace(/^@/, '');
+      const dateStr = parts[3];
+      const targetDate = new Date(dateStr);
+
+      if (isNaN(targetDate.getTime())) {
+        await sendDirectMessage({ _id: userId, username: username }, `❌ Invalid date format: "${dateStr}". Please use YYYY-MM-DD.`);
+        return;
+      }
+
+      try {
+        const targetUserId = await getUserIdByUsername(targetUsername);
+        if (!targetUserId) {
+          await sendDirectMessage({ _id: userId, username: username }, `Could not find user @${targetUsername}`);
+          return;
+        }
+
+        const startOfTargetDay = new Date(targetDate);
+        startOfTargetDay.setHours(0, 0, 0, 0);
+        const endOfTargetDay = new Date(targetDate);
+        endOfTargetDay.setHours(23, 59, 59, 999);
+
+        const record = await Standup.findOne({
+          userId: targetUserId,
+          date: { $gte: startOfTargetDay, $lte: endOfTargetDay }
+        });
+
+        if (!record) {
+          await sendDirectMessage({ _id: userId, username: username }, `No standup record found for @${targetUsername} on ${dateStr}.`);
+          return;
+        }
+
+        const attachments = [];
+        attachments.push({ color: getColor(record.status), text: `📜 *Historical Standup for @${record.username} (${dateStr})*` });
+        record.answers.forEach((ans, i) => {
+          attachments.push({ color: getQuestionColor(i), title: ans.question || QUESTIONS_ARRAY[i] || `Question ${i + 1}`, text: ans.answer });
+        });
+
+        await api.post('chat.postMessage', {
+          roomId: (await api.post('im.create', { username: username })).room._id,
+          attachments: attachments
+        });
+      } catch (err) {
+        await sendDirectMessage({ _id: userId, username: username }, `Error retrieving history: ${err.message}`);
       }
       return;
     }
   }
 
-  // Handle Standup Logic
+  // 4. Standup Flow Logic
   let userSession = standupResponses.get(userId);
   
   if (cleanText === 'start standup') {
     const member = VALID_STANDUP_MEMBERS.find(m => m._id === userId);
-    
     if (!member) {
       await sendDirectMessage({ _id: userId, username: username }, 'Sorry, you are not configured to participate in the standup.');
       return;
     }
 
-    // Check database for existing record today
+    const onVacation = await isUserOnVacation(userId);
+    if (onVacation) {
+      await sendDirectMessage({ _id: userId, username: username }, 'You are currently marked as on vacation 🌴. If you want to participate, please use `clear vacation` first.');
+      return;
+    }
+
     const existingStandup = await getStandupForToday(userId);
-    
     if (existingStandup) {
       if (existingStandup.status === 'answered' || existingStandup.status === 'skipped') {
         await sendDirectMessage({ _id: userId, username: username }, `You have already ${existingStandup.status} today's standup.`);
@@ -744,33 +933,15 @@ const processStandupResponse = async (message) => {
       }
       
       if (existingStandup.status === 'pending' && !userSession) {
-        console.log(`[Manual Trigger] Resuming pending session for @${username}`);
-        userSession = {
-          username: username,
-          answers: existingStandup.answers.map(a => a.answer),
-          status: 'pending',
-          dbId: existingStandup._id
-        };
+        userSession = { username: username, answers: existingStandup.answers.map(a => a.answer), status: 'pending', dbId: existingStandup._id };
         standupResponses.set(userId, userSession);
       }
     }
 
     if (!userSession) {
-      console.log(`[Manual Trigger] Initializing new session for @${username}`);
-      userSession = {
-        username: username,
-        answers: [],
-        status: 'pending'
-      };
+      userSession = { username: username, answers: [], status: 'pending' };
       standupResponses.set(userId, userSession);
-
-      // Create DB record
-      const standup = new Standup({
-        userId: userId,
-        username: username,
-        status: 'pending',
-        answers: []
-      });
+      const standup = new Standup({ userId: userId, username: username, status: 'pending', answers: [] });
       await standup.save();
       userSession.dbId = standup._id;
     }
@@ -779,54 +950,44 @@ const processStandupResponse = async (message) => {
     return;
   }
 
-  // If no session exists, ignore other messages
-  if (!userSession) return;
+  // 5. Active Session Handling
+  if (userSession && (userSession.status === 'pending')) {
+    if (userSession.isProcessing) return;
+    userSession.isProcessing = true;
 
-  // Ignore messages if the user has already finished or skipped
-  if (userSession.status === 'answered' || userSession.status === 'skipped') return;
-
-  // Prevent concurrent processing
-  if (userSession.isProcessing) return;
-  userSession.isProcessing = true;
-
-  try {
-    if (cleanText === 'skip') {
-      userSession.status = 'skipped';
-      await Standup.findByIdAndUpdate(userSession.dbId, { status: 'skipped' }).catch(e => console.error('DB Skip update failed:', e.message));
-      
-      console.log(`@${userSession.username} skipped the standup.`);
-      await sendDirectMessage({ _id: userId, username: userSession.username }, 'You have skipped today\'s standup. Thank you.');
-      await driver.sendToRoomId(`@${userSession.username} has skipped his standup.`, SUMMARY_CHANNEL_ID);
-    } else {
-      const questionIndex = userSession.answers.length;
-      
-      if (questionIndex >= QUESTIONS_ARRAY.length) {
-        userSession.status = 'answered';
-        return;
+    try {
+      if (cleanText === 'skip') {
+        userSession.status = 'skipped';
+        await Standup.findByIdAndUpdate(userSession.dbId, { status: 'skipped' }).catch(e => console.error('DB Skip update failed:', e.message));
+        await sendDirectMessage({ _id: userId, username: userSession.username }, 'You have skipped today\'s standup. Thank you.');
+        await driver.sendToRoomId(`@${userSession.username} has skipped his standup.`, SUMMARY_CHANNEL_ID);
+      } else {
+        const questionIndex = userSession.answers.length;
+        if (questionIndex >= QUESTIONS_ARRAY.length) {
+          userSession.status = 'answered';
+          return;
+        }
+        const currentQuestion = QUESTIONS_ARRAY[questionIndex];
+        userSession.answers.push(text);
+        const isFinished = userSession.answers.length === QUESTIONS_ARRAY.length;
+        await Standup.findByIdAndUpdate(userSession.dbId, {
+          $push: { answers: { question: currentQuestion, answer: text } },
+          status: isFinished ? 'answered' : 'pending'
+        }).catch(dbError => console.error('Error saving to MongoDB:', dbError.message));
+        if (isFinished) userSession.status = 'answered';
+        await askNextQuestion(userId, userSession);
       }
-
-      const currentQuestion = QUESTIONS_ARRAY[questionIndex];
-      userSession.answers.push(text);
-      
-      const isFinished = userSession.answers.length === QUESTIONS_ARRAY.length;
-      console.log(`[Response] @${userSession.username} answered ${userSession.answers.length}/${QUESTIONS_ARRAY.length}`);
-
-      // Save answer to MongoDB
-      await Standup.findByIdAndUpdate(userSession.dbId, {
-        $push: { answers: { question: currentQuestion, answer: text } },
-        status: isFinished ? 'answered' : 'pending'
-      }).catch(dbError => console.error('Error saving to MongoDB:', dbError.message));
-
-      if (isFinished) {
-        userSession.status = 'answered';
-      }
-
-      await askNextQuestion(userId, userSession);
+    } catch (error) {
+      console.error('Error in processStandupResponse flow:', error.message);
+    } finally {
+      userSession.isProcessing = false;
     }
-  } catch (error) {
-    console.error('Error in processStandupResponse:', error.message);
-  } finally {
-    userSession.isProcessing = false;
+    return;
+  }
+
+  // 6. Fallback: If no command matched and no session is active, show help
+  if (!commandMatched) {
+    await sendDirectMessage({ _id: userId, username: username }, "I didn't recognize that command.\n\n" + getHelpMessage(isAdmin));
   }
 };
 
@@ -890,7 +1051,8 @@ module.exports = {
   processStandupResponse,
   standupResponses,
   Standup,
+  Vacation,
+  isUserOnVacation,
   VALID_STANDUP_MEMBERS,
   ADMIN_USER_IDS
 };
-
