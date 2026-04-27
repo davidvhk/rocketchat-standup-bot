@@ -59,11 +59,22 @@ const vacationSchema = new mongoose.Schema({
 
 const Vacation = mongoose.model('Vacation', vacationSchema);
 
+// Schema for bot configuration
+const configSchema = new mongoose.Schema({
+  key: { type: String, required: true, unique: true },
+  value: { type: mongoose.Schema.Types.Mixed, required: true }
+});
+
+const Config = mongoose.model('Config', configSchema);
+
 // A simple in-memory store to hold standup responses for the current day.
 const standupResponses = new Map();
 
 // Track the last question index sent to each user to prevent double-asking
 const lastSentQuestionIndex = new Map();
+
+// Reference to the active cron task for the daily standup
+let standupCronTask;
 
 // Cache to prevent processing the same message ID multiple times
 const processedMessageIds = new Set();
@@ -113,6 +124,7 @@ const BOT_PASSWORD = process.env.BOT_PASSWORD;
 const STANDUP_USERS = (process.env.STANDUP_USERS || '').split(',').map(user => user.trim()).filter(Boolean);
 const SUMMARY_CHANNEL_NAME = process.env.SUMMARY_CHANNEL_NAME;
 const STANDUP_TIME = process.env.STANDUP_TIME || '0 9 * * 1-5'; // Default to 9:00 AM on weekdays
+let currentStandupTime = STANDUP_TIME;
 const QUESTIONS_ARRAY = (process.env.QUESTIONS || '').split(';').map(q => q.trim()).filter(Boolean);
 const ADMIN_USERS = (process.env.ADMIN_USERS || '').split(',').map(user => user.trim()).filter(Boolean);
 const SUMMARY_TIMEOUT_MINUTES = parseInt(process.env.SUMMARY_TIMEOUT_MINUTES, 10) || 30;
@@ -130,6 +142,32 @@ let VALID_STANDUP_MEMBERS = [];
 let ADMIN_USER_IDS = [];
 
 // --- 4. Core Bot Functions ---
+
+/**
+ * Schedules or re-schedules the daily standup cron task.
+ * @param {string} pattern The cron pattern.
+ */
+const scheduleStandup = (pattern) => {
+  if (standupCronTask) {
+    console.log('[scheduleStandup] Stopping existing cron task...');
+    standupCronTask.stop();
+  }
+
+  currentStandupTime = pattern;
+  let cronPattern = pattern.replace('1-7', '*');
+  
+  // Ensure 6 fields (seconds minute hour dom month dow)
+  const fields = cronPattern.split(' ');
+  if (fields.length === 5) {
+    cronPattern = '0 ' + cronPattern;
+  }
+
+  console.log(`[scheduleStandup] Scheduling daily standup with pattern: "${cronPattern}"`);
+  standupCronTask = cron.schedule(cronPattern, () => {
+    console.log(`[Cron] Triggering daily standup at ${new Date().toString()}`);
+    promptUsersForStandup();
+  });
+};
 
 /**
  * Gets the ID of a user by their username.
@@ -657,6 +695,8 @@ const getHelpMessage = (isAdmin) => {
     helpMsg += `\n*Admin Commands:* 👑\n`;
     helpMsg += `- \`force summary\`: Immediately post the final summary for all users.\n`;
     helpMsg += `- \`list users\`: View all participants and their current status.\n`;
+    helpMsg += `- \`show schedule\`: View the current cron schedule for standups.\n`;
+    helpMsg += `- \`set schedule [cron]\`: Dynamically update the standup schedule.\n`;
     helpMsg += `- \`team stats\`: View participation statistics for the entire team.\n`;
     helpMsg += `- \`delete standup @username\`: Delete today's entry for a user so they can redo it.\n`;    helpMsg += `- \`show standup @username YYYY-MM-DD\`: View a specific historical standup entry.\n`;
   }
@@ -1014,6 +1054,45 @@ const processStandupResponse = async (message) => {
       }
       return;
     }
+
+    if (cleanText === 'show schedule') {
+      commandMatched = true;
+      await sendDirectMessage({ _id: userId, username: username }, `The current standup schedule is set to: \`${currentStandupTime}\``);
+      return;
+    }
+
+    if (cleanText.startsWith('set schedule')) {
+      commandMatched = true;
+      const pattern = text.replace(/set schedule/i, '').trim();
+      
+      if (!pattern) {
+        await sendDirectMessage({ _id: userId, username: username }, '❌ Usage: `set schedule [cron pattern]` (e.g., `set schedule 0 10 * * 1-5`)');
+        return;
+      }
+
+      if (!cron.validate(pattern.replace('1-7', '*'))) {
+        await sendDirectMessage({ _id: userId, username: username }, '❌ Invalid cron pattern. Please check your syntax.');
+        return;
+      }
+
+      try {
+        // Save to Config collection for persistence
+        await Config.findOneAndUpdate(
+          { key: 'standupTime' },
+          { value: pattern },
+          { upsert: true, new: true }
+        );
+
+        // Apply the new schedule
+        scheduleStandup(pattern);
+
+        await sendDirectMessage({ _id: userId, username: username }, `✅ Standup schedule updated successfully to: \`${pattern}\``);
+      } catch (err) {
+        console.error('[Admin] Set schedule failed:', err.message);
+        await sendDirectMessage({ _id: userId, username: username }, `Error saving schedule: ${err.message}`);
+      }
+      return;
+    }
   }
 
   // 4. Standup Flow Logic
@@ -1114,20 +1193,16 @@ const start = async () => {
     // 2. Load existing sessions for today from DB
     await loadTodaySessions();
     
-    // 3. Schedule the daily standup
-    let cronPattern = STANDUP_TIME.replace('1-7', '*');
-    
-    // Ensure 6 fields (seconds minute hour dom month dow)
-    const fields = cronPattern.split(' ');
-    if (fields.length === 5) {
-      cronPattern = '0 ' + cronPattern;
+    // 3. Load or initialize the standup schedule
+    const savedTime = await Config.findOne({ key: 'standupTime' });
+    if (savedTime) {
+      console.log(`[start] Found saved standup schedule in DB: "${savedTime.value}"`);
+      currentStandupTime = savedTime.value;
+    } else {
+      console.log(`[start] No saved schedule in DB, using default: "${currentStandupTime}"`);
     }
 
-    // Schedule the standup
-    cron.schedule(cronPattern, () => {
-      console.log(`[Cron] Triggering daily standup at ${new Date().toString()}`);
-      promptUsersForStandup();
-    });
+    scheduleStandup(currentStandupTime);
 
     // Add a heartbeat log every minute to verify the clock and scheduler
     cron.schedule('0 * * * * *', () => {
@@ -1135,8 +1210,9 @@ const start = async () => {
     });
 
     console.log(`\n✅ Standup bot is fully ready!`);
+    console.log(`- Bot Version: v${BOT_VERSION}`);
     console.log(`- Bot Time: ${new Date().toString()}`);
-    console.log(`- Scheduled: ${cronPattern}`);
+    console.log(`- Scheduled: ${currentStandupTime}`);
     console.log(`- Valid members: ${VALID_STANDUP_MEMBERS.map(m => m.username).join(', ')}`);
   } catch (err) {
     console.error('CRITICAL: Failed during startup sequence:', err);
@@ -1159,6 +1235,8 @@ module.exports = {
   standupResponses,
   Standup,
   Vacation,
+  Config,
+  scheduleStandup,
   isUserOnVacation,
   VALID_STANDUP_MEMBERS,
   ADMIN_USER_IDS

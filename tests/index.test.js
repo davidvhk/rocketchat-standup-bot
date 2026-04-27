@@ -2,6 +2,14 @@
 process.env.MONGODB_URI = 'mongodb://localhost:27017/test';
 process.env.STANDUP_USERS = 'member1,member2';
 process.env.QUESTIONS = 'Q1;Q2';
+// Mock node-cron
+jest.mock('node-cron', () => ({
+  schedule: jest.fn().mockReturnValue({
+    stop: jest.fn(),
+    start: jest.fn()
+  }),
+  validate: jest.fn().mockReturnValue(true)
+}));
 
 const { 
   getStandupForToday, 
@@ -11,6 +19,8 @@ const {
   standupResponses, 
   Standup, 
   Vacation,
+  Config,
+  scheduleStandup,
   isUserOnVacation,
   VALID_STANDUP_MEMBERS,
   ADMIN_USER_IDS
@@ -32,6 +42,7 @@ jest.mock('mongoose', () => {
     })),
     findByIdAndUpdate: jest.fn()
   };
+  m.Schema.Types = { Mixed: 'Mixed' };
   return m;
 });
 
@@ -536,6 +547,52 @@ describe('Standup Bot Logic', () => {
       );
       expect(driver.sendToRoomId).toHaveBeenCalledWith(
         expect.stringContaining('@user1: 20 standups'),
+        expect.any(String)
+      );
+    });
+  });
+
+  describe('Schedule Management', () => {
+    const { driver, api } = require('@rocket.chat/sdk');
+
+    it('should allow admin to show schedule', async () => {
+      ADMIN_USER_IDS.push('admin1');
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'show schedule',
+        _id: 'msg_show_sched'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('current standup schedule is set to'),
+        expect.any(String)
+      );
+    });
+
+    it('should allow admin to set schedule', async () => {
+      ADMIN_USER_IDS.push('admin1');
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+      const findOneAndUpdateSpy = jest.spyOn(Config, 'findOneAndUpdate').mockResolvedValue({});
+      
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'set schedule 0 12 * * 1-5',
+        _id: 'msg_set_sched'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(findOneAndUpdateSpy).toHaveBeenCalledWith(
+        { key: 'standupTime' },
+        { value: '0 12 * * 1-5' },
+        { upsert: true, new: true }
+      );
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('schedule updated successfully'),
         expect.any(String)
       );
     });
