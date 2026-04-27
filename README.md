@@ -99,6 +99,7 @@ Users listed in `ADMIN_USERS` can also use:
 
 - `force summary`: Immediately compile and post the standup summary to the summary channel.
 - `list users`: View all active standup members and their current session status.
+- `delete standup @username`: Remove today's standup entry for a specific user, allowing them to redo it.
 
 ---
 

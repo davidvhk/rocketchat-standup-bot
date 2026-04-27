@@ -6,6 +6,7 @@ process.env.QUESTIONS = 'Q1;Q2';
 const { 
   getStandupForToday, 
   loadTodaySessions,
+  publishIndividualSummary,
   processStandupResponse, 
   standupResponses, 
   Standup, 
@@ -21,6 +22,7 @@ jest.mock('mongoose', () => {
     model: jest.fn().mockReturnValue({
       findOne: jest.fn(),
       find: jest.fn(),
+      deleteOne: jest.fn(),
       findByIdAndUpdate: jest.fn(),
       prototype: { save: jest.fn() }
     }),
@@ -105,6 +107,30 @@ describe('Standup Bot Logic', () => {
         status: 'pending',
         answers: []
       });
+    });
+  });
+
+  describe('publishIndividualSummary', () => {
+    it('should post multiple colored attachments for a user summary', async () => {
+      const { api } = require('@rocket.chat/sdk');
+      const userResponse = {
+        username: 'user1',
+        status: 'answered',
+        answers: ['Answer 1', 'Answer 2']
+      };
+
+      await publishIndividualSummary('user1', userResponse);
+
+      expect(api.post).toHaveBeenCalledWith(
+        'chat.postMessage',
+        expect.objectContaining({
+          attachments: expect.arrayContaining([
+            expect.objectContaining({ text: expect.stringContaining('Summary for @user1') }),
+            expect.objectContaining({ color: '#2de0a5', title: 'Q1', text: 'Answer 1' }),
+            expect.objectContaining({ color: '#1d74f5', title: 'Q2', text: 'Answer 2' })
+          ])
+        })
+      );
     });
   });
 
@@ -246,10 +272,17 @@ describe('Standup Bot Logic', () => {
 
       await processStandupResponse(mockMessage);
 
-      expect(driver.sendToRoomId).toHaveBeenCalledWith(
-        expect.stringContaining('Work 1'),
-        'summary_room_id'
+      expect(api.post).toHaveBeenCalledWith(
+        'chat.postMessage',
+        expect.objectContaining({
+          attachments: expect.arrayContaining([
+            expect.objectContaining({ text: expect.stringContaining('Summary for @user1') }),
+            expect.objectContaining({ color: '#2de0a5', title: 'Q1', text: 'Work 1' }),
+            expect.objectContaining({ color: '#1d74f5', title: 'Q2', text: 'Work 2' })
+          ])
+        })
       );
+      
       expect(driver.sendToRoomId).toHaveBeenCalledWith(
         expect.stringContaining('Publishing final standup summary now'),
         expect.any(String)
@@ -268,6 +301,30 @@ describe('Standup Bot Logic', () => {
 
       expect(driver.sendToRoomId).toHaveBeenCalledWith(
         expect.stringContaining('Active Standup Members (1)'),
+        expect.any(String)
+      );
+    });
+
+    it('should allow admin to delete a user standup', async () => {
+      const { driver, api } = require('@rocket.chat/sdk');
+      // Mock user lookup
+      api.get.mockResolvedValue({ user: { _id: 'user1', username: 'user1' } });
+      // Mock deletion
+      jest.spyOn(Standup, 'deleteOne').mockResolvedValue({ deletedCount: 1 });
+      
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'delete standup @user1',
+        _id: 'msg_delete'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(Standup.deleteOne).toHaveBeenCalledWith(expect.objectContaining({
+        userId: 'user1'
+      }));
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Successfully deleted today\'s standup for @user1'),
         expect.any(String)
       );
     });

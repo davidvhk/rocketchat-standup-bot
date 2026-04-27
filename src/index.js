@@ -64,6 +64,36 @@ const cacheMessageId = (id) => {
   }
 };
 
+/**
+ * Returns a color hex code based on the status.
+ * @param {string} status The status ('answered', 'skipped', 'pending').
+ * @returns {string} The hex color code.
+ */
+const getColor = (status) => {
+  switch (status) {
+    case 'answered': return '#2de0a5'; // Green
+    case 'skipped': return '#ffc107'; // Yellow/Orange
+    case 'pending': return '#f5455c'; // Red
+    default: return '#cbced1'; // Grey
+  }
+};
+
+/**
+ * Returns a color for a specific question index to make the summary colorful.
+ * @param {number} index The question index.
+ * @returns {string} Hex color code.
+ */
+const getQuestionColor = (index) => {
+  const palette = [
+    '#2de0a5', // Green
+    '#1d74f5', // Blue
+    '#ffa12f', // Orange
+    '#642afb', // Purple
+    '#f5455c'  // Red
+  ];
+  return palette[index % palette.length];
+};
+
 // --- 3. Environment Variables ---
 // Retrieve all necessary variables from the .env file.
 const ROCKCHAT_URL = process.env.ROCKETCHAT_URL;
@@ -300,13 +330,29 @@ const publishIndividualSummary = async (userId, userResponse) => {
   try {
     console.log(`[publishIndividualSummary] Building summary for @${userResponse.username}`);
     
-    let summaryText = `*Standup Summary for @${userResponse.username}*\n`;
-    userResponse.answers.forEach((ans, i) => {
-      summaryText += `> *${QUESTIONS_ARRAY[i]}*\n${ans}\n\n`;
+    const attachments = [];
+    
+    // 1. Header attachment
+    attachments.push({
+      color: getColor(userResponse.status),
+      text: `🔔 *Standup Summary for @${userResponse.username}*`,
+      ts: new Date().toISOString()
     });
 
-    // Use the highly reliable driver.sendToRoomId for the summary
-    await driver.sendToRoomId(summaryText, SUMMARY_CHANNEL_ID);
+    // 2. One attachment per question for colorful display
+    userResponse.answers.forEach((ans, i) => {
+      attachments.push({
+        color: getQuestionColor(i),
+        title: QUESTIONS_ARRAY[i],
+        text: ans
+      });
+    });
+
+    await api.post('chat.postMessage', {
+      roomId: SUMMARY_CHANNEL_ID,
+      attachments: attachments
+    });
+
     console.log(`[publishIndividualSummary] Summary posted for @${userResponse.username}`);
   } catch (error) {
     console.error('[publishIndividualSummary] Error:', error.message);
@@ -489,38 +535,53 @@ const promptUsersForStandup = async () => {
 const publishStandupSummary = async () => {
   console.log(`\n--- Publishing final standup summary for channel ${SUMMARY_CHANNEL_NAME} ---`);
   
-  let summaryText = 'Daily Standup Summary\n\n';
-  let hasContent = false;
+  const attachments = [];
   
   if (standupResponses.size === 0) {
-    summaryText += 'No standup responses were collected today.';
-    hasContent = true;
+    attachments.push({
+      color: getColor('default'),
+      text: 'No standup responses were collected today.'
+    });
   } else {
     for (const [userId, data] of standupResponses.entries()) {
       if (data.status === 'answered') {
-        summaryText += `*@${data.username}*\n`;
-        data.answers.forEach((ans, i) => {
-          summaryText += `> *${QUESTIONS_ARRAY[i]}*\n${ans}\n`;
+        // User header
+        attachments.push({
+          color: getColor('answered'),
+          text: `✅ *Summary for @${data.username}*`
         });
-        summaryText += '\n';
-        hasContent = true;
+        
+        // Individual questions with their own colors
+        data.answers.forEach((ans, i) => {
+          attachments.push({
+            color: getQuestionColor(i),
+            title: QUESTIONS_ARRAY[i],
+            text: ans
+          });
+        });
       } else if (data.status === 'skipped') {
-        summaryText += `@${data.username}: Skipped the standup.\n\n`;
-        hasContent = true;
+        attachments.push({
+          color: getColor('skipped'),
+          text: `🟡 @${data.username}: Skipped the standup.`
+        });
       } else if (data.status === 'pending') {
-        summaryText += `@${data.username}: Did not respond.\n\n`;
-        hasContent = true;
+        attachments.push({
+          color: getColor('pending'),
+          text: `🔴 @${data.username}: Did not respond.`
+        });
       }
     }
   }
 
-  if (hasContent) {
-    try {
-      await driver.sendToRoomId(summaryText, SUMMARY_CHANNEL_ID);
-      console.log('[publishStandupSummary] Final summary published successfully!');
-    } catch (error) {
-      console.error('[publishStandupSummary] Failed to publish summary:', error.message);
-    }
+  try {
+    await api.post('chat.postMessage', {
+      roomId: SUMMARY_CHANNEL_ID,
+      text: '🗓️ *Daily Standup Consolidated Report*',
+      attachments: attachments
+    });
+    console.log('[publishStandupSummary] Final summary published successfully!');
+  } catch (error) {
+    console.error('[publishStandupSummary] Failed to publish summary:', error.message);
   }
 };
 
@@ -590,6 +651,7 @@ const processStandupResponse = async (message) => {
       helpMsg += `\n*Admin Commands:* 👑\n`;
       helpMsg += `- \`force summary\`: Immediately post the final summary for all users.\n`;
       helpMsg += `- \`list users\`: View all participants and their current status.\n`;
+      helpMsg += `- \`delete standup @username\`: Delete today's entry for a user so they can redo it.\n`;
     }
 
     await sendDirectMessage({ _id: userId, username: username }, helpMsg);
@@ -617,6 +679,46 @@ const processStandupResponse = async (message) => {
         listMsg += `- @${m.username} (ID: ${m._id}) [Session: ${session ? session.status : 'None'}]\n`;
       });
       await sendDirectMessage({ _id: userId, username: username }, listMsg);
+      return;
+    }
+
+    if (cleanText.startsWith('delete standup ')) {
+      const targetUsername = text.replace(/delete standup /i, '').replace(/^@/, '').trim();
+      console.log(`[Admin] @${username} is deleting standup for @${targetUsername}`);
+
+      try {
+        // 1. Find user ID from username
+        const targetUserId = await getUserIdByUsername(targetUsername);
+        if (!targetUserId) {
+          await sendDirectMessage({ _id: userId, username: username }, `Could not find user @${targetUsername}`);
+          return;
+        }
+
+        // 2. Delete today's record from MongoDB
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date();
+        endOfDay.setHours(23, 59, 59, 999);
+
+        const deleteResult = await Standup.deleteOne({
+          userId: targetUserId,
+          date: { $gte: startOfDay, $lte: endOfDay }
+        });
+
+        // 3. Clear from memory
+        standupResponses.delete(targetUserId);
+        lastSentQuestionIndex.delete(targetUserId);
+
+        if (deleteResult.deletedCount > 0) {
+          await sendDirectMessage({ _id: userId, username: username }, `Successfully deleted today's standup for @${targetUsername}. They can now start over.`);
+          console.log(`[Admin] Successfully deleted standup for @${targetUsername}`);
+        } else {
+          await sendDirectMessage({ _id: userId, username: username }, `No standup found for @${targetUsername} today.`);
+        }
+      } catch (err) {
+        console.error(`[Admin] Delete failed:`, err.message);
+        await sendDirectMessage({ _id: userId, username: username }, `Error deleting standup: ${err.message}`);
+      }
       return;
     }
   }
@@ -783,6 +885,7 @@ if (require.main === module) {
 module.exports = {
   getStandupForToday,
   loadTodaySessions,
+  publishIndividualSummary,
   promptUsersForStandup,
   processStandupResponse,
   standupResponses,
