@@ -17,5 +17,11 @@
     "node-cron": "^3.0.0"
   },
   "author": "David Vanhoucke",
+  "contributors": [
+    {
+      "name": "David Vanhoucke",
+      "url": "https://github.com/davidvhk"
+    }
+  ],
   "license": "MIT"
 }
