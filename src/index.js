@@ -41,7 +41,8 @@ const standupSchema = new mongoose.Schema({
     answer: String,
     timestamp: { type: Date, default: Date.now }
   }],
-  status: { type: String, enum: ['pending', 'answered', 'skipped'], default: 'pending' }
+  status: { type: String, enum: ['pending', 'answered', 'skipped'], default: 'pending' },
+  snoozeUntil: { type: Date, default: null }
 });
 
 // Index to help with common queries (e.g., reports for a specific user or date)
@@ -428,7 +429,7 @@ const askNextQuestion = async (userId, userResponse) => {
     
     let messageText;
     if (currentQuestionIndex === 0) {
-      messageText = `Hi ${userResponse.username}! It's time for today's standup. You can type **'skip'** at any time to skip.\n\n- ${nextQuestion}`;
+      messageText = `Hi ${userResponse.username}! It's time for today's standup. You can type **'skip'** to skip or **'snooze [minutes]'** to delay.\n\n- ${nextQuestion}`;
     } else {
       messageText = `- ${nextQuestion}`;
     }
@@ -467,6 +468,41 @@ const isUserOnVacation = async (userId) => {
   });
 
   return !!vacation;
+};
+
+/**
+ * Checks for users whose snooze period has expired and re-prompts them.
+ */
+const checkSnoozes = async () => {
+  const now = new Date();
+  try {
+    const expiredSnoozes = await Standup.find({
+      status: 'pending',
+      snoozeUntil: { $lte: now }
+    });
+
+    for (const record of expiredSnoozes) {
+      console.log(`[checkSnoozes] Snooze expired for @${record.username}. Re-prompting.`);
+      
+      // Update DB to clear snooze
+      await Standup.findByIdAndUpdate(record._id, { snoozeUntil: null });
+
+      // Restore session in memory
+      const userSession = {
+        username: record.username,
+        answers: record.answers.map(a => a.answer),
+        status: 'pending',
+        dbId: record._id
+      };
+      standupResponses.set(record.userId, userSession);
+
+      // Re-prompt
+      await sendDirectMessage({ _id: record.userId, username: record.username }, "⏰ *Snooze over!* Let's continue your standup.");
+      await askNextQuestion(record.userId, userSession);
+    }
+  } catch (err) {
+    console.error('[checkSnoozes] Error:', err.message);
+  }
 };
 
 /**
@@ -685,8 +721,9 @@ const getHelpMessage = (isAdmin) => {
   helpMsg += `- \`status\`: Check your membership and today's standup progress.\n`;
   helpMsg += `- \`start standup\`: Manually start or resume your standup.\n`;
   helpMsg += `- \`skip\`: Skip today's standup (during an active session).\n`;
-  helpMsg += `- \`vacation YYYY-MM-DD YYYY-MM-DD\`: Schedule a vacation period.\n`;
-  helpMsg += `- \`show vacation\`: View your scheduled vacation.\n`;
+  helpMsg += `- \`snooze [minutes]\`: Delay your standup reminder (default: 30m).\n`;
+  helpMsg += `- \`show snooze\`: View remaining snooze time.\n`;
+  helpMsg += `- \`vacation YYYY-MM-DD YYYY-MM-DD\`: Schedule a vacation period.\n`;  helpMsg += `- \`show vacation\`: View your scheduled vacation.\n`;
   helpMsg += `- \`clear vacation\`: Remove your vacation schedule.\n`;
   helpMsg += `- \`stats\`: View your participation statistics.\n`;
   helpMsg += `- \`help\`: Show this message.\n`;
@@ -1097,7 +1134,59 @@ const processStandupResponse = async (message) => {
 
   // 4. Standup Flow Logic
   let userSession = standupResponses.get(userId);
-  
+
+  if (cleanText.startsWith('snooze')) {
+    if (!userSession || userSession.status !== 'pending') {
+      await sendDirectMessage({ _id: userId, username: username }, "You don't have an active standup to snooze.");
+      return;
+    }
+
+    const parts = text.split(' ').filter(p => p.trim() !== '');
+    let snoozeMinutes = 30; // Default
+    if (parts.length >= 2) {
+      const val = parseInt(parts[1], 10);
+      if (!isNaN(val) && val > 0) {
+        snoozeMinutes = val;
+      }
+    }
+
+    const snoozeUntil = new Date();
+    snoozeUntil.setMinutes(snoozeUntil.getMinutes() + snoozeMinutes);
+
+    try {
+      await Standup.findByIdAndUpdate(userSession.dbId, { snoozeUntil: snoozeUntil });
+      
+      // Clear from memory so the cron will pick it up later
+      standupResponses.delete(userId);
+      lastSentQuestionIndex.delete(userId);
+
+      await sendDirectMessage({ _id: userId, username: username }, `Standup snoozed 😴. I will remind you again in ${snoozeMinutes} minutes.`);
+      console.log(`[Snooze] @${username} snoozed until ${snoozeUntil.toISOString()}`);
+    } catch (err) {
+      console.error('[Snooze] Error:', err.message);
+    }
+    return;
+  }
+
+  if (cleanText === 'show snooze') {
+    commandMatched = true;
+    try {
+      const record = await getStandupForToday(userId);
+      const now = new Date();
+      if (record && record.snoozeUntil && record.snoozeUntil > now) {
+        const diffMs = record.snoozeUntil - now;
+        const diffMins = Math.ceil(diffMs / (1000 * 60));
+        
+        await sendDirectMessage({ _id: userId, username: username }, `You have **${diffMins} minutes** of snooze remaining. I will remind you at ${record.snoozeUntil.toLocaleTimeString()}. 😴`);
+      } else {
+        await sendDirectMessage({ _id: userId, username: username }, "You don't have an active snooze.");
+      }
+    } catch (err) {
+      console.error('[Snooze] Show failed:', err.message);
+    }
+    return;
+  }
+
   if (cleanText === 'start standup') {
     const member = VALID_STANDUP_MEMBERS.find(m => m._id === userId);
     if (!member) {
@@ -1207,6 +1296,7 @@ const start = async () => {
     // Add a heartbeat log every minute to verify the clock and scheduler
     cron.schedule('0 * * * * *', () => {
       console.log(`[Heartbeat] Bot time: ${new Date().toLocaleTimeString()} | Users: ${VALID_STANDUP_MEMBERS.length}`);
+      checkSnoozes(); // Also check for snoozes every minute
     });
 
     console.log(`\n✅ Standup bot is fully ready!`);
@@ -1237,6 +1327,7 @@ module.exports = {
   Vacation,
   Config,
   scheduleStandup,
+  checkSnoozes,
   isUserOnVacation,
   VALID_STANDUP_MEMBERS,
   ADMIN_USER_IDS

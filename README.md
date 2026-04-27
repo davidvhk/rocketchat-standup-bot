@@ -94,6 +94,8 @@ Direct message the bot with these commands:
 - `status`: Get a diagnostic report of your membership status, current session, and daily participation.
 - `start standup`: Manually initiate your standup session for the day.
 - `skip`: Opt-out of the current standup session.
+- `snooze [minutes]`: Delay your standup reminder by X minutes (default: 30).
+- `show snooze`: View remaining snooze time if you have an active snooze.
 - `vacation YYYY-MM-DD YYYY-MM-DD`: Set a vacation period. The bot will automatically skip your standups during these dates.
 - `show vacation`: View your currently scheduled vacation period.
 - `clear vacation`: Remove your scheduled vacation.

@@ -21,6 +21,7 @@ const {
   Vacation,
   Config,
   scheduleStandup,
+  checkSnoozes,
   isUserOnVacation,
   VALID_STANDUP_MEMBERS,
   ADMIN_USER_IDS
@@ -593,6 +594,89 @@ describe('Standup Bot Logic', () => {
       );
       expect(driver.sendToRoomId).toHaveBeenCalledWith(
         expect.stringContaining('schedule updated successfully'),
+        expect.any(String)
+      );
+    });
+  });
+
+  describe('Snooze Logic', () => {
+    const { driver, api } = require('@rocket.chat/sdk');
+
+    it('should allow snoozing an active session', async () => {
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+      const findByIdAndUpdateSpy = jest.spyOn(Standup, 'findByIdAndUpdate').mockResolvedValue({});
+      
+      // Setup active session
+      standupResponses.set('user1', {
+        username: 'user1',
+        status: 'pending',
+        dbId: 'dbid1',
+        answers: []
+      });
+
+      const mockMessage = {
+        u: { _id: 'user1', username: 'user1' },
+        msg: 'snooze 10',
+        _id: 'msg_snooze'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(findByIdAndUpdateSpy).toHaveBeenCalledWith(
+        'dbid1',
+        expect.objectContaining({ snoozeUntil: expect.any(Date) })
+      );
+      expect(standupResponses.has('user1')).toBe(false);
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Standup snoozed'),
+        expect.any(String)
+      );
+    });
+
+    it('should re-prompt when snooze expires', async () => {
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+      const expiredRecords = [{
+        _id: 'dbid1',
+        userId: 'user1',
+        username: 'user1',
+        answers: [],
+        status: 'pending'
+      }];
+      
+      jest.spyOn(Standup, 'find').mockResolvedValue(expiredRecords);
+      const findByIdAndUpdateSpy = jest.spyOn(Standup, 'findByIdAndUpdate').mockResolvedValue({});
+
+      await checkSnoozes();
+
+      expect(findByIdAndUpdateSpy).toHaveBeenCalledWith('dbid1', { snoozeUntil: null });
+      expect(standupResponses.get('user1')).toMatchObject({ status: 'pending' });
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Snooze over'),
+        expect.any(String)
+      );
+    });
+
+    it('should show remaining snooze time', async () => {
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+      
+      const futureDate = new Date();
+      futureDate.setMinutes(futureDate.getMinutes() + 15);
+      
+      jest.spyOn(Standup, 'findOne').mockResolvedValue({
+        userId: 'user1',
+        snoozeUntil: futureDate
+      });
+
+      const mockMessage = {
+        u: { _id: 'user1', username: 'user1' },
+        msg: 'show snooze',
+        _id: 'msg_show_snooze'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('15 minutes'),
         expect.any(String)
       );
     });
