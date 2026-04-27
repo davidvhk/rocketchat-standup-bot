@@ -648,14 +648,15 @@ const getHelpMessage = (isAdmin) => {
   helpMsg += `- \`vacation YYYY-MM-DD YYYY-MM-DD\`: Schedule a vacation period.\n`;
   helpMsg += `- \`show vacation\`: View your scheduled vacation.\n`;
   helpMsg += `- \`clear vacation\`: Remove your vacation schedule.\n`;
+  helpMsg += `- \`stats\`: View your participation statistics.\n`;
   helpMsg += `- \`help\`: Show this message.\n`;
 
   if (isAdmin) {
     helpMsg += `\n*Admin Commands:* 👑\n`;
     helpMsg += `- \`force summary\`: Immediately post the final summary for all users.\n`;
     helpMsg += `- \`list users\`: View all participants and their current status.\n`;
-    helpMsg += `- \`delete standup @username\`: Delete today's entry for a user so they can redo it.\n`;
-    helpMsg += `- \`show standup @username YYYY-MM-DD\`: View a specific historical standup entry.\n`;
+    helpMsg += `- \`team stats\`: View participation statistics for the entire team.\n`;
+    helpMsg += `- \`delete standup @username\`: Delete today's entry for a user so they can redo it.\n`;    helpMsg += `- \`show standup @username YYYY-MM-DD\`: View a specific historical standup entry.\n`;
   }
   return helpMsg;
 };
@@ -788,6 +789,53 @@ const processStandupResponse = async (message) => {
     return;
   }
 
+  if (cleanText === 'stats') {
+    commandMatched = true;
+    const isMember = VALID_STANDUP_MEMBERS.some(m => m._id === userId);
+    if (!isMember) {
+      await sendDirectMessage({ _id: userId, username: username }, "Statistics are only available for configured standup members.");
+      return;
+    }
+
+    try {
+      const stats = await Standup.aggregate([
+        { $match: { userId: userId } },
+        { $group: {
+            _id: "$status",
+            count: { $sum: 1 }
+          }
+        }
+      ]);
+
+      let total = 0;
+      let answered = 0;
+      let skipped = 0;
+      let pending = 0;
+
+      stats.forEach(s => {
+        total += s.count;
+        if (s._id === 'answered') answered = s.count;
+        if (s._id === 'skipped') skipped = s.count;
+        if (s._id === 'pending') pending = s.count;
+      });
+
+      const participationRate = total > 0 ? ((answered / total) * 100).toFixed(1) : 0;
+
+      let msg = `📊 *Your Standup Statistics*\n\n`;
+      msg += `- Total Prompts: ${total}\n`;
+      msg += `- Completed: ${answered} ✅\n`;
+      msg += `- Skipped: ${skipped} 🟡\n`;
+      msg += `- Unanswered: ${pending} 🔴\n`;
+      msg += `- Participation Rate: ${participationRate}%\n`;
+
+      await sendDirectMessage({ _id: userId, username: username }, msg);
+    } catch (err) {
+      console.error('[Stats] Error:', err.message);
+      await sendDirectMessage({ _id: userId, username: username }, "Failed to retrieve statistics.");
+    }
+    return;
+  }
+
   // 3. Admin Commands
   if (isAdmin) {
     if (cleanText === 'force summary') {
@@ -809,6 +857,62 @@ const processStandupResponse = async (message) => {
         listMsg += `- @${m.username} (ID: ${m._id}) [Session: ${session ? session.status : 'None'}]\n`;
       });
       await sendDirectMessage({ _id: userId, username: username }, listMsg);
+      return;
+    }
+
+    if (cleanText === 'team stats') {
+      commandMatched = true;
+      try {
+        const globalStats = await Standup.aggregate([
+          { $group: {
+              _id: "$status",
+              count: { $sum: 1 }
+            }
+          }
+        ]);
+
+        let total = 0;
+        let answered = 0;
+        let skipped = 0;
+        let pending = 0;
+
+        globalStats.forEach(s => {
+          total += s.count;
+          if (s._id === 'answered') answered = s.count;
+          if (s._id === 'skipped') skipped = s.count;
+          if (s._id === 'pending') pending = s.count;
+        });
+
+        const userLeaderboard = await Standup.aggregate([
+          { $match: { status: 'answered' } },
+          { $group: {
+              _id: "$username",
+              count: { $sum: 1 }
+            }
+          },
+          { $sort: { count: -1 } },
+          { $limit: 5 }
+        ]);
+
+        let msg = `🏆 *Team Standup Statistics*\n\n`;
+        msg += `*Overall Participation:*\n`;
+        msg += `- Total Prompts: ${total}\n`;
+        msg += `- Total Completed: ${answered} ✅\n`;
+        msg += `- Total Skipped: ${skipped} 🟡\n`;
+        msg += `- Total Unanswered: ${pending} 🔴\n\n`;
+        
+        if (userLeaderboard.length > 0) {
+          msg += `*Top Participants (All-time):*\n`;
+          userLeaderboard.forEach((u, i) => {
+            msg += `${i+1}. @${u._id}: ${u.count} standups\n`;
+          });
+        }
+
+        await sendDirectMessage({ _id: userId, username: username }, msg);
+      } catch (err) {
+        console.error('[Team Stats] Error:', err.message);
+        await sendDirectMessage({ _id: userId, username: username }, "Failed to retrieve team statistics.");
+      }
       return;
     }
 

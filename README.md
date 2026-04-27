@@ -96,12 +96,14 @@ Direct message the bot with these commands:
 - `vacation YYYY-MM-DD YYYY-MM-DD`: Set a vacation period. The bot will automatically skip your standups during these dates.
 - `show vacation`: View your currently scheduled vacation period.
 - `clear vacation`: Remove your scheduled vacation.
+- `stats`: View your personal participation statistics.
 
 ### Admin Commands 👑
 Users listed in `ADMIN_USERS` can also use:
 
 - `force summary`: Immediately compile and post the standup summary to the summary channel.
 - `list users`: View all active standup members and their current session status.
+- `team stats`: View participation statistics for the entire team, including a leaderboard.
 - `delete standup @username`: Remove today's standup entry for a specific user, allowing them to redo it.
 - `show standup @username YYYY-MM-DD`: View a specific historical standup entry for a user.
 

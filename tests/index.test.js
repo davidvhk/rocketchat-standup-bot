@@ -27,6 +27,7 @@ jest.mock('mongoose', () => {
       deleteOne: jest.fn().mockResolvedValue({ deletedCount: 0 }),
       findByIdAndUpdate: jest.fn().mockResolvedValue({}),
       findOneAndUpdate: jest.fn().mockResolvedValue({}),
+      aggregate: jest.fn().mockResolvedValue([]),
       prototype: { save: jest.fn().mockResolvedValue({}) }
     })),
     findByIdAndUpdate: jest.fn()
@@ -478,6 +479,63 @@ describe('Standup Bot Logic', () => {
 
       expect(driver.sendToRoomId).toHaveBeenCalledWith(
         expect.stringContaining('currently marked as on vacation'),
+        expect.any(String)
+      );
+    });
+  });
+
+  describe('Statistics Commands', () => {
+    const { driver, api } = require('@rocket.chat/sdk');
+
+    it('should show personal stats to a member', async () => {
+      VALID_STANDUP_MEMBERS.push({ _id: 'user1', username: 'user1' });
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+      
+      const aggregateSpy = jest.spyOn(Standup, 'aggregate').mockResolvedValue([
+        { _id: 'answered', count: 10 },
+        { _id: 'skipped', count: 2 }
+      ]);
+
+      const mockMessage = {
+        u: { _id: 'user1', username: 'user1' },
+        msg: 'stats',
+        _id: 'msg_stats'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(aggregateSpy).toHaveBeenCalledWith(expect.arrayContaining([
+        expect.objectContaining({ $match: { userId: 'user1' } })
+      ]));
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Completed: 10'),
+        expect.any(String)
+      );
+    });
+
+    it('should allow admin to see team stats', async () => {
+      ADMIN_USER_IDS.push('admin1');
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+      
+      // Mock global stats and then leaderboard
+      const aggregateSpy = jest.spyOn(Standup, 'aggregate')
+        .mockResolvedValueOnce([{ _id: 'answered', count: 50 }]) // global
+        .mockResolvedValueOnce([{ _id: 'user1', count: 20 }, { _id: 'user2', count: 15 }]); // leaderboard
+
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'team stats',
+        _id: 'msg_team_stats'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Team Standup Statistics'),
+        expect.any(String)
+      );
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('@user1: 20 standups'),
         expect.any(String)
       );
     });
