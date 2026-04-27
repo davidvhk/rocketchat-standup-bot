@@ -5,6 +5,7 @@
 // --- 1. Dependencies and Setup ---
 // Load environment variables from a .env file
 require('dotenv').config();
+const { version: BOT_VERSION } = require('../package.json');
 
 // Add global error handlers
 process.on('unhandledRejection', (reason, promise) => {
@@ -358,7 +359,8 @@ const publishIndividualSummary = async (userId, userResponse) => {
 
     await api.post('chat.postMessage', {
       roomId: SUMMARY_CHANNEL_ID,
-      attachments: attachments
+      attachments: attachments,
+      text: `_Bot version: ${BOT_VERSION}_`
     });
 
     console.log(`[publishIndividualSummary] Summary posted for @${userResponse.username}`);
@@ -624,7 +626,7 @@ const publishStandupSummary = async () => {
   try {
     await api.post('chat.postMessage', {
       roomId: SUMMARY_CHANNEL_ID,
-      text: '🗓️ *Daily Standup Consolidated Report*',
+      text: `🗓️ *Daily Standup Consolidated Report*\n_Bot version: ${BOT_VERSION}_`,
       attachments: attachments
     });
     console.log('[publishStandupSummary] Final summary published successfully!');
@@ -698,6 +700,7 @@ const processStandupResponse = async (message) => {
     const dbEntry = await getStandupForToday(userId);
 
     let statusMsg = `*Bot Status Check*\n`;
+    statusMsg += `- Bot Version: v${BOT_VERSION}\n`;
     statusMsg += `- Your Username: @${username}\n`;
     statusMsg += `- Your User ID: ${userId}\n`;
     statusMsg += `- Is Standup Member: ${isMember ? 'Yes ✅' : 'No ❌'}\n`;

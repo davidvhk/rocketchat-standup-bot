@@ -9,6 +9,7 @@ A robust Node.js bot for Rocket.Chat that automates daily standup meetings. It p
 - **One Standup Per Day**: Strict validation to prevent duplicate submissions.
 - **Manual Triggers**: Start your standup manually if you missed the prompt.
 - **Diagnostic Commands**: Built-in `ping` and `status` for troubleshooting.
+- **Version Tracking**: Display current bot version in summaries and status reports.
 - **Docker Ready**: Easy deployment with Docker and Docker Compose.
 - **CI/CD Verified**: Automated testing suite using Jest.
 
