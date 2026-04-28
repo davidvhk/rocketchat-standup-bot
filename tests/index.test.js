@@ -18,14 +18,14 @@ const {
   processStandupResponse, 
   standupResponses, 
   Standup, 
-  Vacation,
+  Holiday,
   Config,
   Member,
   Mute,
   refreshMembers,
   scheduleStandup,
   checkSnoozes,
-  isUserOnVacation,
+  isUserOnHoliday,
   VALID_STANDUP_MEMBERS,
   ADMIN_USER_IDS
 } = require('../src/index');
@@ -37,8 +37,11 @@ jest.mock('mongoose', () => {
     Schema: jest.fn().mockImplementation(() => ({ index: jest.fn() })),
     model: jest.fn().mockImplementation(() => ({
       findOne: jest.fn().mockResolvedValue(null),
-      find: jest.fn().mockResolvedValue([]),
+      find: jest.fn().mockReturnValue({
+        sort: jest.fn().mockResolvedValue([])
+      }),
       deleteOne: jest.fn().mockResolvedValue({ deletedCount: 0 }),
+      deleteMany: jest.fn().mockResolvedValue({ deletedCount: 0 }),
       findByIdAndUpdate: jest.fn().mockResolvedValue({}),
       findOneAndUpdate: jest.fn().mockResolvedValue({}),
       aggregate: jest.fn().mockResolvedValue([]),
@@ -426,17 +429,17 @@ describe('Standup Bot Logic', () => {
     });
   });
 
-  describe('Vacation Logic', () => {
+  describe('Holiday Logic', () => {
     const { driver, api } = require('@rocket.chat/sdk');
 
-    it('should allow user to set vacation', async () => {
+    it('should allow user to set holiday', async () => {
       api.post.mockResolvedValue({ room: { _id: 'room1' } });
-      const findOneAndUpdateSpy = jest.spyOn(Vacation, 'findOneAndUpdate').mockResolvedValue({});
+      const findOneAndUpdateSpy = jest.spyOn(Holiday, 'findOneAndUpdate').mockResolvedValue({});
       
       const mockMessage = {
         u: { _id: 'user1', username: 'user1' },
-        msg: 'vacation 2026-05-01 2026-05-10',
-        _id: 'msg_vacation'
+        msg: 'holiday 2026-05-01 2026-05-10',
+        _id: 'msg_holiday'
       };
 
       await processStandupResponse(mockMessage);
@@ -450,23 +453,25 @@ describe('Standup Bot Logic', () => {
         expect.any(Object)
       );
       expect(driver.sendToRoomId).toHaveBeenCalledWith(
-        expect.stringContaining('Vacation set from 2026-05-01 to 2026-05-10'),
+        expect.stringContaining('Holiday set from 2026-05-01 to 2026-05-10'),
         expect.any(String)
       );
     });
 
-    it('should show current vacation', async () => {
+    it('should show current holiday', async () => {
       api.post.mockResolvedValue({ room: { _id: 'room1' } });
-      Vacation.findOne.mockResolvedValue({
-        userId: 'user1',
-        startDate: new Date(2026, 4, 1),
-        endDate: new Date(2026, 4, 10)
+      jest.spyOn(Holiday, 'find').mockReturnValue({
+        sort: jest.fn().mockResolvedValue([{
+          userId: 'user1',
+          startDate: new Date(2026, 4, 1),
+          endDate: new Date(2026, 4, 10)
+        }])
       });
       
       const mockMessage = {
         u: { _id: 'user1', username: 'user1' },
-        msg: 'show vacation',
-        _id: 'msg_show_vacation'
+        msg: 'show holiday',
+        _id: 'msg_show_holiday'
       };
 
       await processStandupResponse(mockMessage);
@@ -477,30 +482,59 @@ describe('Standup Bot Logic', () => {
       );
     });
 
-    it('should allow user to clear vacation', async () => {
+    it('should allow user to clear all holidays', async () => {
       api.post.mockResolvedValue({ room: { _id: 'room1' } });
+      jest.spyOn(Holiday, 'deleteMany').mockResolvedValue({ deletedCount: 1 });
       
       const mockMessage = {
         u: { _id: 'user1', username: 'user1' },
-        msg: 'clear vacation',
-        _id: 'msg_clear_vac'
+        msg: 'clear holiday all',
+        _id: 'msg_clear_hol_all'
       };
 
       await processStandupResponse(mockMessage);
 
-      expect(Vacation.deleteOne).toHaveBeenCalledWith({ userId: 'user1' });
+      expect(Holiday.deleteMany).toHaveBeenCalledWith({ userId: 'user1' });
       expect(driver.sendToRoomId).toHaveBeenCalledWith(
-        expect.stringContaining('vacation period has been cleared'),
+        expect.stringContaining('All your holiday periods (1) have been cleared'),
         expect.any(String)
       );
     });
 
-    it('should reject starting standup if on vacation', async () => {
+    it('should allow user to clear a specific holiday', async () => {
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+      const mockHoliday = {
+        _id: 'hol_id_1',
+        userId: 'user1',
+        startDate: new Date(2026, 4, 1),
+        endDate: new Date(2026, 4, 10)
+      };
+      jest.spyOn(Holiday, 'find').mockReturnValue({
+        sort: jest.fn().mockResolvedValue([mockHoliday])
+      });
+      jest.spyOn(Holiday, 'deleteOne').mockResolvedValue({ deletedCount: 1 });
+      
+      const mockMessage = {
+        u: { _id: 'user1', username: 'user1' },
+        msg: 'clear holiday 1',
+        _id: 'msg_clear_hol_1'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(Holiday.deleteOne).toHaveBeenCalledWith({ _id: 'hol_id_1' });
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Holiday period #1 (2026-05-01 to 2026-05-10) has been cleared'),
+        expect.any(String)
+      );
+    });
+
+    it('should reject starting standup if on holiday', async () => {
       VALID_STANDUP_MEMBERS.push({ _id: 'user1', username: 'user1' });
       api.post.mockResolvedValue({ room: { _id: 'room1' } });
       
-      // Mock being on vacation
-      Vacation.findOne.mockResolvedValue({
+      // Mock being on holiday
+      jest.spyOn(Holiday, 'findOne').mockResolvedValue({
         userId: 'user1',
         startDate: new Date(2026, 0, 1),
         endDate: new Date(2026, 11, 31)
@@ -509,13 +543,13 @@ describe('Standup Bot Logic', () => {
       const mockMessage = {
         u: { _id: 'user1', username: 'user1' },
         msg: 'start standup',
-        _id: 'msg_start_vacation'
+        _id: 'msg_start_holiday'
       };
 
       await processStandupResponse(mockMessage);
 
       expect(driver.sendToRoomId).toHaveBeenCalledWith(
-        expect.stringContaining('currently marked as on vacation'),
+        expect.stringContaining('currently marked as on holiday'),
         expect.any(String)
       );
     });

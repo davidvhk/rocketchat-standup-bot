@@ -50,15 +50,15 @@ standupSchema.index({ userId: 1, date: -1 });
 
 const Standup = mongoose.model('Standup', standupSchema);
 
-// Schema for user vacations
-const vacationSchema = new mongoose.Schema({
+// Schema for user holidays
+const holidaySchema = new mongoose.Schema({
   userId: { type: String, required: true },
   username: { type: String, required: true },
   startDate: { type: Date, required: true },
   endDate: { type: Date, required: true }
 });
 
-const Vacation = mongoose.model('Vacation', vacationSchema);
+const Holiday = mongoose.model('Holiday', holidaySchema);
 
 // Schema for bot configuration
 const configSchema = new mongoose.Schema({
@@ -511,21 +511,21 @@ const askNextQuestion = async (userId, userResponse) => {
 };
 
 /**
- * Checks if a user is currently on vacation.
+ * Checks if a user is currently on holiday.
  * @param {string} userId The user's ID.
- * @returns {Promise<boolean>} True if the user is on vacation today.
+ * @returns {Promise<boolean>} True if the user is on holiday today.
  */
-const isUserOnVacation = async (userId) => {
+const isUserOnHoliday = async (userId) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const vacation = await Vacation.findOne({
+  const holiday = await Holiday.findOne({
     userId: userId,
     startDate: { $lte: today },
     endDate: { $gte: today }
   });
 
-  return !!vacation;
+  return !!holiday;
 };
 
 /**
@@ -665,10 +665,10 @@ const promptUsersForStandup = async () => {
           }
         }
 
-        // 2. Check for vacation
-        const onVacation = await isUserOnVacation(member._id);
-        if (onVacation) {
-          console.log(`[promptUsersForStandup] User @${member.username} is on vacation. Automatically skipping.`);
+        // 2. Check for holiday
+        const onHoliday = await isUserOnHoliday(member._id);
+        if (onHoliday) {
+          console.log(`[promptUsersForStandup] User @${member.username} is on holiday. Automatically skipping.`);
           const userSession = {
             username: member.username,
             answers: [],
@@ -680,7 +680,7 @@ const promptUsersForStandup = async () => {
             userId: member._id,
             username: member.username,
             status: 'skipped',
-            answers: [{ question: 'Auto-skipped', answer: 'On vacation 🌴' }]
+            answers: [{ question: 'Auto-skipped', answer: 'On holiday 🌴' }]
           });
           await standup.save();
           userSession.dbId = standup._id;
@@ -794,8 +794,9 @@ const getHelpMessage = (isAdmin) => {
   helpMsg += `- \`start standup\`: Manually start or resume your standup.\n`;
   helpMsg += `- \`snooze [minutes]\`: Delay your standup reminder (default: 30m).\n`;
   helpMsg += `- \`show snooze\`: View remaining snooze time.\n`;
-  helpMsg += `- \`vacation YYYY-MM-DD YYYY-MM-DD\`: Schedule a vacation period.\n`;  helpMsg += `- \`show vacation\`: View your scheduled vacation.\n`;
-  helpMsg += `- \`clear vacation\`: Remove your vacation schedule.\n`;
+  helpMsg += `- \`holiday YYYY-MM-DD YYYY-MM-DD\`: Schedule a holiday period.\n`;
+  helpMsg += `- \`show holiday\`: View your scheduled holiday period(s).\n`;
+  helpMsg += `- \`clear holiday all/[number]\`: Remove all or specific holiday period.\n`;
   helpMsg += `- \`stats\`: View your participation statistics.\n`;
   helpMsg += `- \`help\`: Show this message.\n`;
 
@@ -879,12 +880,12 @@ const processStandupResponse = async (message) => {
     return;
   }
 
-  // 2. Vacation Commands
-  if (cleanText.startsWith('vacation')) {
+  // 2. Holiday Commands
+  if (cleanText.startsWith('holiday')) {
     commandMatched = true;
     const parts = text.split(' ').filter(p => p.trim() !== '');
     if (parts.length < 3) {
-      await sendDirectMessage({ _id: userId, username: username }, '❌ Usage: `vacation YYYY-MM-DD YYYY-MM-DD` (Start and End date inclusive).');
+      await sendDirectMessage({ _id: userId, username: username }, '❌ Usage: `holiday YYYY-MM-DD YYYY-MM-DD` (Start and End date inclusive).');
       return;
     }
 
@@ -904,46 +905,78 @@ const processStandupResponse = async (message) => {
     }
 
     try {
-      await Vacation.findOneAndUpdate(
-        { userId: userId },
+      await Holiday.findOneAndUpdate(
+        { userId: userId, startDate: startDate, endDate: endDate },
         { userId: userId, username: username, startDate: startDate, endDate: endDate },
         { upsert: true, new: true }
       );
-      await sendDirectMessage({ _id: userId, username: username }, `Vacation set from ${startStr} to ${endStr}. I will automatically skip your standups during this period. ✅`);
+      await sendDirectMessage({ _id: userId, username: username }, `Holiday set from ${startStr} to ${endStr}. I will automatically skip your standups during this period. ✅`);
     } catch (err) {
-      console.error('[Vacation] Save failed:', err.message);
-      await sendDirectMessage({ _id: userId, username: username }, `Error setting vacation: ${err.message}`);
+      console.error('[Holiday] Save failed:', err.message);
+      await sendDirectMessage({ _id: userId, username: username }, `Error setting holiday: ${err.message}`);
     }
     return;
   }
 
-  if (cleanText === 'show vacation') {
+  if (cleanText === 'show holiday') {
     commandMatched = true;
     try {
-      const vacation = await Vacation.findOne({ userId: userId });
-      if (vacation) {
-        const startStr = formatLocalDate(vacation.startDate);
-        const endStr = formatLocalDate(vacation.endDate);
+      const holidays = await Holiday.find({ userId: userId }).sort({ startDate: 1 });
+      if (holidays.length > 0) {
+        let msg = `*Your Scheduled Holiday Periods (${holidays.length}):*\n`;
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        const isActive = today >= vacation.startDate && today <= vacation.endDate;
-        await sendDirectMessage({ _id: userId, username: username }, `Your scheduled vacation: *${startStr}* to *${endStr}* ${isActive ? '(Currently Active 🌴)' : '(Upcoming/Past)'}\n\nTo clear it, type \`clear vacation\`.`);
+
+        holidays.forEach((h, i) => {
+          const startStr = formatLocalDate(h.startDate);
+          const endStr = formatLocalDate(h.endDate);
+          const isActive = today >= h.startDate && today <= h.endDate;
+          msg += `${i + 1}. *${startStr}* to *${endStr}* ${isActive ? '(Currently Active 🌴)' : ''}\n`;
+        });
+        
+        msg += `\nTo delete a specific period, use \`clear holiday [number]\`. To delete all, use \`clear holiday all\`.`;
+        await sendDirectMessage({ _id: userId, username: username }, msg);
       } else {
-        await sendDirectMessage({ _id: userId, username: username }, 'You have no vacation periods scheduled.');
+        await sendDirectMessage({ _id: userId, username: username }, 'You have no holiday periods scheduled.');
       }
     } catch (err) {
-      console.error('[Vacation] Show failed:', err.message);
+      console.error('[Holiday] Show failed:', err.message);
     }
     return;
   }
 
-  if (cleanText === 'clear vacation') {
+  if (cleanText.startsWith('clear holiday')) {
     commandMatched = true;
+    const parts = cleanText.split(' ').filter(p => p.trim() !== '');
+    
     try {
-      await Vacation.deleteOne({ userId: userId });
-      await sendDirectMessage({ _id: userId, username: username }, 'Your vacation period has been cleared. 🏠');
+      if (parts.length === 2) {
+        await sendDirectMessage({ _id: userId, username: username }, '❌ Please specify which holiday to clear: `clear holiday all` or `clear holiday [number]`.');
+        return;
+      }
+
+      const arg = parts[2];
+      if (arg === 'all') {
+        const result = await Holiday.deleteMany({ userId: userId });
+        await sendDirectMessage({ _id: userId, username: username }, `All your holiday periods (${result.deletedCount}) have been cleared. 🏠`);
+      } else {
+        const index = parseInt(arg, 10) - 1;
+        if (isNaN(index)) {
+          await sendDirectMessage({ _id: userId, username: username }, '❌ Invalid argument. Use `all` or a number.');
+          return;
+        }
+
+        const holidays = await Holiday.find({ userId: userId }).sort({ startDate: 1 });
+        if (holidays[index]) {
+          await Holiday.deleteOne({ _id: holidays[index]._id });
+          await sendDirectMessage({ _id: userId, username: username }, `Holiday period #${index + 1} (${formatLocalDate(holidays[index].startDate)} to ${formatLocalDate(holidays[index].endDate)}) has been cleared. ✅`);
+        } else {
+          await sendDirectMessage({ _id: userId, username: username }, `❌ Holiday period #${index + 1} not found.`);
+        }
+      }
     } catch (err) {
-      console.error('[Vacation] Clear failed:', err.message);
+      console.error('[Holiday] Clear failed:', err.message);
+      await sendDirectMessage({ _id: userId, username: username }, `Error clearing holiday: ${err.message}`);
     }
     return;
   }
@@ -1474,9 +1507,9 @@ const processStandupResponse = async (message) => {
       return;
     }
 
-    const onVacation = await isUserOnVacation(userId);
-    if (onVacation) {
-      await sendDirectMessage({ _id: userId, username: username }, 'You are currently marked as on vacation 🌴. If you want to participate, please use `clear vacation` first.');
+    const onHoliday = await isUserOnHoliday(userId);
+    if (onHoliday) {
+      await sendDirectMessage({ _id: userId, username: username }, 'You are currently marked as on holiday 🌴. If you want to participate, please use `clear holiday` first.');
       return;
     }
 
@@ -1604,14 +1637,14 @@ module.exports = {
   processStandupResponse,
   standupResponses,
   Standup,
-  Vacation,
+  Holiday,
   Config,
   Member,
   Mute,
   refreshMembers,
   scheduleStandup,
   checkSnoozes,
-  isUserOnVacation,
+  isUserOnHoliday,
   VALID_STANDUP_MEMBERS,
   ADMIN_USER_IDS
 };
