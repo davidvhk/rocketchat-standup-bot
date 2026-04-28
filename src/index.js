@@ -68,6 +68,16 @@ const configSchema = new mongoose.Schema({
 
 const Config = mongoose.model('Config', configSchema);
 
+// Schema for members and their roles
+const memberSchema = new mongoose.Schema({
+  userId: { type: String, required: true, unique: true },
+  username: { type: String, required: true },
+  isStandupMember: { type: Boolean, default: false },
+  isAdmin: { type: Boolean, default: false }
+});
+
+const Member = mongoose.model('Member', memberSchema);
+
 // A simple in-memory store to hold standup responses for the current day.
 const standupResponses = new Map();
 
@@ -193,6 +203,27 @@ const getUserIdByUsername = async (username) => {
 };
 
 /**
+ * Refreshes the in-memory VALID_STANDUP_MEMBERS and ADMIN_USER_IDS from the database.
+ */
+const refreshMembers = async () => {
+  const allMembers = await Member.find({});
+  
+  VALID_STANDUP_MEMBERS.length = 0;
+  const newMembers = allMembers
+    .filter(m => m.isStandupMember)
+    .map(m => ({ _id: m.userId, username: m.username }));
+  VALID_STANDUP_MEMBERS.push(...newMembers);
+
+  ADMIN_USER_IDS.length = 0;
+  const newAdmins = allMembers
+    .filter(m => m.isAdmin)
+    .map(m => m.userId);
+  ADMIN_USER_IDS.push(...newAdmins);
+  
+  console.log(`[refreshMembers] Members: ${VALID_STANDUP_MEMBERS.length}, Admins: ${ADMIN_USER_IDS.length}`);
+};
+
+/**
  * Connects the bot to the Rocket.Chat server and logs in.
  */
 const connect = async () => {
@@ -203,6 +234,21 @@ const connect = async () => {
       serverSelectionTimeoutMS: 5000 // Timeout after 5 seconds if MongoDB is not reachable
     });
     console.log('Connected to MongoDB successfully!');
+
+    // Initialize members from environment variables if the database is empty
+    const memberCount = await Member.countDocuments();
+    if (memberCount === 0) {
+      console.log('[connect] Member collection is empty. Bootstrapping from environment variables...');
+      
+      const uniqueUsernames = [...new Set([...STANDUP_USERS, ...ADMIN_USERS])];
+      for (const username of uniqueUsernames) {
+        if (username === BOT_USERNAME) continue;
+        
+        // We need to login to API first to look up user IDs
+      }
+      // Actually we need to log in to RocketChat first before we can lookup IDs.
+      // So we will do the bootstrapping AFTER login.
+    }
 
     console.log('Connecting to Rocket.Chat...');
     await driver.connect({ host: ROCKCHAT_URL, useSsl: ROCKCHAT_URL.startsWith('https') });
@@ -225,6 +271,30 @@ const connect = async () => {
       BOT_USER_ID = me._id;
       console.log(`Bot User ID retrieved from 'me' API: ${BOT_USER_ID}`);
     }
+    
+    // Bootstrap members if empty
+    if (await Member.countDocuments() === 0) {
+      console.log('[connect] Bootstrapping members from env vars...');
+      const uniqueUsernames = [...new Set([...STANDUP_USERS, ...ADMIN_USERS])];
+      for (const uname of uniqueUsernames) {
+        if (uname === BOT_USERNAME) continue;
+        const uid = await getUserIdByUsername(uname);
+        if (uid) {
+          await Member.findOneAndUpdate(
+            { userId: uid },
+            { 
+              userId: uid, 
+              username: uname, 
+              isStandupMember: STANDUP_USERS.includes(uname),
+              isAdmin: ADMIN_USERS.includes(uname)
+            },
+            { upsert: true }
+          );
+        }
+      }
+    }
+
+    await refreshMembers();
     
     // Get the channel IDs from their names using the SDK's built-in methods
     console.log(`Looking up ID for channel: "${SUMMARY_CHANNEL_NAME}"`);
@@ -251,49 +321,6 @@ const connect = async () => {
       console.error(`[Error] Room lookup/join failed for "${SUMMARY_CHANNEL_NAME}":`, roomError);
       process.exit(1);
     }
-
-    // Check for user existence at startup
-    console.log(`[connect] Checking existence for users: ${STANDUP_USERS.join(', ')}`);
-    VALID_STANDUP_MEMBERS = []; // Reset to avoid duplicates on reconnect
-    const uniqueUsernames = [...new Set(STANDUP_USERS)]; // Ensure unique usernames from config
-
-    for (const username of uniqueUsernames) {
-      if (username === BOT_USERNAME) {
-        console.log(`[connect] Skipping bot user: ${username}`);
-        continue;
-      }
-      console.log(`[connect] Looking up ID for user: ${username}`);
-      const userId = await getUserIdByUsername(username);
-      if (userId) {
-        console.log(`[connect] Found user ${username} with ID: ${userId}`);
-        // Ensure we don't add the same ID multiple times
-        if (!VALID_STANDUP_MEMBERS.find(m => m._id === userId)) {
-          VALID_STANDUP_MEMBERS.push({ _id: userId, username: username });
-        }
-      } else {
-        console.log(`[connect] User "${username}" not found. Skipping.`);
-      }
-    }
-
-    // Check for admin existence at startup
-    console.log(`[connect] Checking existence for admin users: ${ADMIN_USERS.join(', ')}`);
-    ADMIN_USER_IDS = []; // Reset to avoid duplicates on reconnect
-    const uniqueAdminUsernames = [...new Set(ADMIN_USERS)];
-
-    for (const username of uniqueAdminUsernames) {
-      console.log(`[connect] Looking up ID for admin user: ${username}`);
-      const userId = await getUserIdByUsername(username);
-      if (userId) {
-        console.log(`[connect] Found admin user ${username} with ID: ${userId}`);
-        if (!ADMIN_USER_IDS.includes(userId)) {
-          ADMIN_USER_IDS.push(userId);
-        }
-      } else {
-        console.log(`[connect] Admin user "${username}" not found. Skipping.`);
-      }
-    }
-    
-    console.log(`[connect] Finished checking users. Valid members: ${VALID_STANDUP_MEMBERS.length}, Admins: ${ADMIN_USER_IDS.length}`);
     
     // Set up the Realtime API listener after successful login
     console.log('Setting up Realtime API listener...');
@@ -732,9 +759,14 @@ const getHelpMessage = (isAdmin) => {
     helpMsg += `\n*Admin Commands:* 👑\n`;
     helpMsg += `- \`force summary\`: Immediately post the final summary for all users.\n`;
     helpMsg += `- \`list users\`: View all participants and their current status.\n`;
+    helpMsg += `- \`list admins\`: View all users with administrative privileges.\n`;
     helpMsg += `- \`show schedule\`: View the current cron schedule for standups.\n`;
     helpMsg += `- \`set schedule [cron]\`: Dynamically update the standup schedule.\n`;
     helpMsg += `- \`team stats\`: View participation statistics for the entire team.\n`;
+    helpMsg += `- \`add user @username\`: Add a user to the standup member list.\n`;
+    helpMsg += `- \`remove user @username\`: Remove a user from the standup member list.\n`;
+    helpMsg += `- \`add admin @username\`: Grant admin privileges to a user.\n`;
+    helpMsg += `- \`remove admin @username\`: Revoke admin privileges from a user.\n`;
     helpMsg += `- \`delete standup @username\`: Delete today's entry for a user so they can redo it.\n`;    helpMsg += `- \`show standup @username YYYY-MM-DD\`: View a specific historical standup entry.\n`;
   }
   return helpMsg;
@@ -788,7 +820,7 @@ const processStandupResponse = async (message) => {
     statusMsg += `- Configured Schedule: ${STANDUP_TIME}\n`;
     
     if (!isMember) {
-      statusMsg += `\n_Note: You are not in the STANDUP_USERS list in the .env file._`;
+      statusMsg += `\n_Note: You are not a registered standup member. Ask an admin to add you._`;
     }
     
     await sendDirectMessage({ _id: userId, username: username }, statusMsg);
@@ -940,6 +972,21 @@ const processStandupResponse = async (message) => {
       return;
     }
 
+    if (cleanText === 'list admins') {
+      commandMatched = true;
+      try {
+        const admins = await Member.find({ isAdmin: true });
+        let listMsg = `*Bot Administrators (${admins.length}):*\n`;
+        admins.forEach(a => {
+          listMsg += `- @${a.username} (ID: ${a.userId})\n`;
+        });
+        await sendDirectMessage({ _id: userId, username: username }, listMsg);
+      } catch (err) {
+        await sendDirectMessage({ _id: userId, username: username }, `Error listing admins: ${err.message}`);
+      }
+      return;
+    }
+
     if (cleanText === 'team stats') {
       commandMatched = true;
       try {
@@ -993,6 +1040,92 @@ const processStandupResponse = async (message) => {
         console.error('[Team Stats] Error:', err.message);
         await sendDirectMessage({ _id: userId, username: username }, "Failed to retrieve team statistics.");
       }
+      return;
+    }
+
+    if (cleanText.startsWith('add user')) {
+      commandMatched = true;
+      const targetUsername = text.split(' ').slice(2).join(' ').replace(/^@/, '').trim();
+      if (!targetUsername) {
+        await sendDirectMessage({ _id: userId, username: username }, '❌ Usage: `add user @username`');
+        return;
+      }
+      const targetId = await getUserIdByUsername(targetUsername);
+      if (!targetId) {
+        await sendDirectMessage({ _id: userId, username: username }, `❌ Could not find user @${targetUsername}`);
+        return;
+      }
+      await Member.findOneAndUpdate(
+        { userId: targetId },
+        { userId: targetId, username: targetUsername, isStandupMember: true },
+        { upsert: true }
+      );
+      await refreshMembers();
+      await sendDirectMessage({ _id: userId, username: username }, `✅ Added @${targetUsername} to standup members.`);
+      return;
+    }
+
+    if (cleanText.startsWith('remove user')) {
+      commandMatched = true;
+      const targetUsername = text.split(' ').slice(2).join(' ').replace(/^@/, '').trim();
+      if (!targetUsername) {
+        await sendDirectMessage({ _id: userId, username: username }, '❌ Usage: `remove user @username`');
+        return;
+      }
+      const targetId = await getUserIdByUsername(targetUsername);
+      if (!targetId) {
+        await sendDirectMessage({ _id: userId, username: username }, `❌ Could not find user @${targetUsername}`);
+        return;
+      }
+      await Member.findOneAndUpdate(
+        { userId: targetId },
+        { isStandupMember: false }
+      );
+      await refreshMembers();
+      await sendDirectMessage({ _id: userId, username: username }, `✅ Removed @${targetUsername} from standup members.`);
+      return;
+    }
+
+    if (cleanText.startsWith('add admin')) {
+      commandMatched = true;
+      const targetUsername = text.split(' ').slice(2).join(' ').replace(/^@/, '').trim();
+      if (!targetUsername) {
+        await sendDirectMessage({ _id: userId, username: username }, '❌ Usage: `add admin @username`');
+        return;
+      }
+      const targetId = await getUserIdByUsername(targetUsername);
+      if (!targetId) {
+        await sendDirectMessage({ _id: userId, username: username }, `❌ Could not find user @${targetUsername}`);
+        return;
+      }
+      await Member.findOneAndUpdate(
+        { userId: targetId },
+        { userId: targetId, username: targetUsername, isAdmin: true },
+        { upsert: true }
+      );
+      await refreshMembers();
+      await sendDirectMessage({ _id: userId, username: username }, `✅ Added @${targetUsername} to admins.`);
+      return;
+    }
+
+    if (cleanText.startsWith('remove admin')) {
+      commandMatched = true;
+      const targetUsername = text.split(' ').slice(2).join(' ').replace(/^@/, '').trim();
+      if (!targetUsername) {
+        await sendDirectMessage({ _id: userId, username: username }, '❌ Usage: `remove admin @username`');
+        return;
+      }
+      const targetId = await getUserIdByUsername(targetUsername);
+      if (!targetId) {
+        await sendDirectMessage({ _id: userId, username: username }, `❌ Could not find user @${targetUsername}`);
+        return;
+      }
+      await Member.findOneAndUpdate(
+        { userId: targetId },
+        { isAdmin: false }
+      );
+      await refreshMembers();
+      await sendDirectMessage({ _id: userId, username: username }, `✅ Removed @${targetUsername} from admins.`);
       return;
     }
 
@@ -1326,6 +1459,8 @@ module.exports = {
   Standup,
   Vacation,
   Config,
+  Member,
+  refreshMembers,
   scheduleStandup,
   checkSnoozes,
   isUserOnVacation,

@@ -20,6 +20,8 @@ const {
   Standup, 
   Vacation,
   Config,
+  Member,
+  refreshMembers,
   scheduleStandup,
   checkSnoozes,
   isUserOnVacation,
@@ -321,6 +323,28 @@ describe('Standup Bot Logic', () => {
       );
     });
 
+    it('should allow admin to list admins', async () => {
+      jest.spyOn(Member, 'find').mockResolvedValue([
+        { userId: 'admin1', username: 'admin1', isAdmin: true }
+      ]);
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'list admins',
+        _id: 'msg_list_admins'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Bot Administrators (1)'),
+        expect.any(String)
+      );
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('@admin1'),
+        expect.any(String)
+      );
+    });
+
     it('should allow admin to delete a user standup', async () => {
       const { driver, api } = require('@rocket.chat/sdk');
       // Mock user lookup
@@ -594,6 +618,117 @@ describe('Standup Bot Logic', () => {
       );
       expect(driver.sendToRoomId).toHaveBeenCalledWith(
         expect.stringContaining('schedule updated successfully'),
+        expect.any(String)
+      );
+    });
+  });
+
+  describe('Member Management', () => {
+    const { driver, api } = require('@rocket.chat/sdk');
+
+    beforeEach(() => {
+      ADMIN_USER_IDS.push('admin1');
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+    });
+
+    it('should allow admin to add a standup member', async () => {
+      api.get.mockResolvedValue({ user: { _id: 'newuser_id', username: 'newuser' } });
+      const findOneAndUpdateSpy = jest.spyOn(Member, 'findOneAndUpdate').mockResolvedValue({});
+      jest.spyOn(Member, 'find').mockResolvedValue([
+        { userId: 'newuser_id', username: 'newuser', isStandupMember: true, isAdmin: false }
+      ]);
+
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'add user @newuser',
+        _id: 'msg_add_user'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(findOneAndUpdateSpy).toHaveBeenCalledWith(
+        { userId: 'newuser_id' },
+        expect.objectContaining({ isStandupMember: true }),
+        { upsert: true }
+      );
+      expect(VALID_STANDUP_MEMBERS).toContainEqual({ _id: 'newuser_id', username: 'newuser' });
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Added @newuser to standup members'),
+        expect.any(String)
+      );
+    });
+
+    it('should allow admin to remove a standup member', async () => {
+      api.get.mockResolvedValue({ user: { _id: 'user1_id', username: 'user1' } });
+      const findOneAndUpdateSpy = jest.spyOn(Member, 'findOneAndUpdate').mockResolvedValue({});
+      jest.spyOn(Member, 'find').mockResolvedValue([]); // Empty after removal
+
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'remove user @user1',
+        _id: 'msg_remove_user'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(findOneAndUpdateSpy).toHaveBeenCalledWith(
+        { userId: 'user1_id' },
+        { isStandupMember: false }
+      );
+      expect(VALID_STANDUP_MEMBERS.length).toBe(0);
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Removed @user1 from standup members'),
+        expect.any(String)
+      );
+    });
+
+    it('should allow admin to add an admin', async () => {
+      api.get.mockResolvedValue({ user: { _id: 'newadmin_id', username: 'newadmin' } });
+      const findOneAndUpdateSpy = jest.spyOn(Member, 'findOneAndUpdate').mockResolvedValue({});
+      jest.spyOn(Member, 'find').mockResolvedValue([
+        { userId: 'newadmin_id', username: 'newadmin', isStandupMember: false, isAdmin: true }
+      ]);
+
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'add admin @newadmin',
+        _id: 'msg_add_admin'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(findOneAndUpdateSpy).toHaveBeenCalledWith(
+        { userId: 'newadmin_id' },
+        expect.objectContaining({ isAdmin: true }),
+        { upsert: true }
+      );
+      expect(ADMIN_USER_IDS).toContain('newadmin_id');
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Added @newadmin to admins'),
+        expect.any(String)
+      );
+    });
+
+    it('should allow admin to remove an admin', async () => {
+      api.get.mockResolvedValue({ user: { _id: 'oldadmin_id', username: 'oldadmin' } });
+      const findOneAndUpdateSpy = jest.spyOn(Member, 'findOneAndUpdate').mockResolvedValue({});
+      jest.spyOn(Member, 'find').mockResolvedValue([]);
+
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'remove admin @oldadmin',
+        _id: 'msg_remove_admin'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(findOneAndUpdateSpy).toHaveBeenCalledWith(
+        { userId: 'oldadmin_id' },
+        { isAdmin: false }
+      );
+      expect(ADMIN_USER_IDS).not.toContain('oldadmin_id');
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Removed @oldadmin from admins'),
         expect.any(String)
       );
     });
