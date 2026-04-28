@@ -93,20 +93,30 @@ Direct message the bot with these commands:
 - `ping`: Check if the bot is responsive.
 - `status`: Get a diagnostic report of your membership status, current session, and daily participation.
 - `start standup`: Manually initiate your standup session for the day.
-- `skip`: Opt-out of the current standup session.
 - `snooze [minutes]`: Delay your standup reminder by X minutes (default: 30).
 - `show snooze`: View remaining snooze time if you have an active snooze.
 - `vacation YYYY-MM-DD YYYY-MM-DD`: Set a vacation period. The bot will automatically skip your standups during these dates.
 - `show vacation`: View your currently scheduled vacation period.
 - `clear vacation`: Remove your scheduled vacation.
 - `stats`: View your personal participation statistics.
+- `help`: Show the list of available commands.
 
 ### Admin Commands 👑
-Users listed in `ADMIN_USERS` can also use:
+Users listed in `ADMIN_USERS` (or added via `add admin`) can also use:
 
 - `force summary`: Immediately compile and post the standup summary to the summary channel.
 - `list users`: View all active standup members and their current session status.
+- `list admins`: View all users with administrative privileges.
+- `show schedule`: View the current cron schedule for standups.
+- `set schedule [cron]`: Dynamically update the standup schedule (e.g., `set schedule 0 10 * * 1-5`).
 - `team stats`: View participation statistics for the entire team, including a leaderboard.
+- `add user @username`: Add a user to the standup member list.
+- `remove user @username`: Remove a user from the standup member list.
+- `add admin @username`: Grant admin privileges to a user.
+- `remove admin @username`: Revoke admin privileges from a user.
+- `mute YYYY-MM-DD [reason]`: Mute standups for a specific date with an optional reason.
+- `unmute YYYY-MM-DD`: Unmute standups for a specific date.
+- `list mutes`: View all upcoming muted dates.
 - `delete standup @username`: Remove today's standup entry for a specific user, allowing them to redo it.
 - `show standup @username YYYY-MM-DD`: View a specific historical standup entry for a user.
 

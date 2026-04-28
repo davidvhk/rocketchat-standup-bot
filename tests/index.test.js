@@ -21,6 +21,7 @@ const {
   Vacation,
   Config,
   Member,
+  Mute,
   refreshMembers,
   scheduleStandup,
   checkSnoozes,
@@ -458,8 +459,8 @@ describe('Standup Bot Logic', () => {
       api.post.mockResolvedValue({ room: { _id: 'room1' } });
       Vacation.findOne.mockResolvedValue({
         userId: 'user1',
-        startDate: new Date('2026-05-01'),
-        endDate: new Date('2026-05-10')
+        startDate: new Date(2026, 4, 1),
+        endDate: new Date(2026, 4, 10)
       });
       
       const mockMessage = {
@@ -501,8 +502,8 @@ describe('Standup Bot Logic', () => {
       // Mock being on vacation
       Vacation.findOne.mockResolvedValue({
         userId: 'user1',
-        startDate: new Date('2026-01-01'),
-        endDate: new Date('2026-12-31')
+        startDate: new Date(2026, 0, 1),
+        endDate: new Date(2026, 11, 31)
       });
 
       const mockMessage = {
@@ -730,6 +731,108 @@ describe('Standup Bot Logic', () => {
       expect(driver.sendToRoomId).toHaveBeenCalledWith(
         expect.stringContaining('Removed @oldadmin from admins'),
         expect.any(String)
+      );
+    });
+  });
+
+  describe('Muting Logic', () => {
+    const { driver, api } = require('@rocket.chat/sdk');
+
+    beforeEach(() => {
+      ADMIN_USER_IDS.push('admin1');
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+    });
+
+    it('should allow admin to mute a date and notify summary channel', async () => {
+      const findOneAndUpdateSpy = jest.spyOn(Mute, 'findOneAndUpdate').mockResolvedValue({});
+      driver.getRoomId.mockResolvedValue('summary_room_id');
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'mute 2026-12-25 Christmas',
+        _id: 'msg_mute'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(findOneAndUpdateSpy).toHaveBeenCalledWith(
+        { date: expect.any(Date) },
+        expect.objectContaining({ reason: 'Christmas', addedBy: 'admin1' }),
+        { upsert: true }
+      );
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Standup muted for **2026-12-25** (Christmas)'),
+        expect.any(String)
+      );
+      expect(api.post).toHaveBeenCalledWith(
+        'chat.postMessage',
+        expect.objectContaining({
+          roomId: 'summary_room_id',
+          text: expect.stringContaining('Standup Muted for 2026-12-25')
+        })
+      );
+    });
+
+    it('should allow admin to unmute a date and notify summary channel', async () => {
+      const deleteOneSpy = jest.spyOn(Mute, 'deleteOne').mockResolvedValue({ deletedCount: 1 });
+      driver.getRoomId.mockResolvedValue('summary_room_id');
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'unmute 2026-12-25',
+        _id: 'msg_unmute'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(deleteOneSpy).toHaveBeenCalledWith({ date: expect.any(Date) });
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Standup unmuted for **2026-12-25**'),
+        expect.any(String)
+      );
+      expect(api.post).toHaveBeenCalledWith(
+        'chat.postMessage',
+        expect.objectContaining({
+          roomId: 'summary_room_id',
+          text: expect.stringContaining('Standup Unmuted for 2026-12-25')
+        })
+      );
+    });
+
+    it('should allow admin to list mutes and format dates locally', async () => {
+      jest.spyOn(Mute, 'find').mockReturnValue({
+        sort: jest.fn().mockResolvedValue([
+          { date: new Date(2026, 4, 1), reason: 'Holiday', addedBy: 'admin1' }
+        ])
+      });
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'list mutes',
+        _id: 'msg_list_mutes'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Upcoming Muted Dates (1)'),
+        expect.any(String)
+      );
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('2026-05-01'),
+        expect.any(String)
+      );
+    });
+
+    it('should skip prompting if today is muted', async () => {
+      jest.spyOn(Mute, 'findOne').mockResolvedValue({ reason: 'Public Holiday' });
+      const { promptUsersForStandup } = require('../src/index');
+
+      await promptUsersForStandup();
+
+      expect(api.post).toHaveBeenCalledWith(
+        'chat.postMessage',
+        expect.objectContaining({
+          text: expect.stringContaining('Standup Muted Today'),
+          text: expect.stringContaining('Public Holiday')
+        })
       );
     });
   });

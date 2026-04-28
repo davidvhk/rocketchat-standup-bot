@@ -78,6 +78,15 @@ const memberSchema = new mongoose.Schema({
 
 const Member = mongoose.model('Member', memberSchema);
 
+// Schema for muted dates (holidays/days off)
+const muteSchema = new mongoose.Schema({
+  date: { type: Date, required: true, unique: true },
+  reason: { type: String, default: 'Holiday/Day Off' },
+  addedBy: { type: String }
+});
+
+const Mute = mongoose.model('Mute', muteSchema);
+
 // A simple in-memory store to hold standup responses for the current day.
 const standupResponses = new Map();
 
@@ -95,6 +104,28 @@ const cacheMessageId = (id) => {
     const first = processedMessageIds.values().next().value;
     processedMessageIds.delete(first);
   }
+};
+
+/**
+ * Formats a Date object to YYYY-MM-DD in local time.
+ * @param {Date} date The date to format.
+ * @returns {string} The formatted date string.
+ */
+const formatLocalDate = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+/**
+ * Parses a YYYY-MM-DD string into a Date object at local midnight.
+ * @param {string} dateStr The date string to parse.
+ * @returns {Date} The parsed Date object.
+ */
+const parseLocalDate = (dateStr) => {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  return new Date(year, month - 1, day, 0, 0, 0, 0);
 };
 
 /**
@@ -587,9 +618,23 @@ const loadTodaySessions = async () => {
  */
 const promptUsersForStandup = async () => {
   console.log(`\n--- Starting daily standup for specified users ---`);
-  standupResponses.clear(); // Clear previous session responses
   
   try {
+    // 1. Check if today is muted
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const muteRecord = await Mute.findOne({ date: today });
+    
+    if (muteRecord) {
+      console.log(`[promptUsersForStandup] Today is muted: ${muteRecord.reason}. Skipping prompts.`);
+      await api.post('chat.postMessage', {
+        roomId: SUMMARY_CHANNEL_ID,
+        text: `🔕 *Standup Muted Today*\nReason: ${muteRecord.reason}\n_Enjoy your day off!_ 🌴`
+      });
+      return;
+    }
+
+    standupResponses.clear(); // Clear previous session responses
     const validMembers = VALID_STANDUP_MEMBERS;
 
     console.log(`[promptUsersForStandup] Found ${validMembers.length} valid members for standup.`);
@@ -747,7 +792,6 @@ const getHelpMessage = (isAdmin) => {
   helpMsg += `- \`ping\`: Check if I'm online.\n`;
   helpMsg += `- \`status\`: Check your membership and today's standup progress.\n`;
   helpMsg += `- \`start standup\`: Manually start or resume your standup.\n`;
-  helpMsg += `- \`skip\`: Skip today's standup (during an active session).\n`;
   helpMsg += `- \`snooze [minutes]\`: Delay your standup reminder (default: 30m).\n`;
   helpMsg += `- \`show snooze\`: View remaining snooze time.\n`;
   helpMsg += `- \`vacation YYYY-MM-DD YYYY-MM-DD\`: Schedule a vacation period.\n`;  helpMsg += `- \`show vacation\`: View your scheduled vacation.\n`;
@@ -767,6 +811,9 @@ const getHelpMessage = (isAdmin) => {
     helpMsg += `- \`remove user @username\`: Remove a user from the standup member list.\n`;
     helpMsg += `- \`add admin @username\`: Grant admin privileges to a user.\n`;
     helpMsg += `- \`remove admin @username\`: Revoke admin privileges from a user.\n`;
+    helpMsg += `- \`mute YYYY-MM-DD [reason]\`: Mute standups for a specific date.\n`;
+    helpMsg += `- \`unmute YYYY-MM-DD\`: Unmute standups for a specific date.\n`;
+    helpMsg += `- \`list mutes\`: View all upcoming muted dates.\n`;
     helpMsg += `- \`delete standup @username\`: Delete today's entry for a user so they can redo it.\n`;    helpMsg += `- \`show standup @username YYYY-MM-DD\`: View a specific historical standup entry.\n`;
   }
   return helpMsg;
@@ -843,8 +890,8 @@ const processStandupResponse = async (message) => {
 
     const startStr = parts[1];
     const endStr = parts[2];
-    const startDate = new Date(startStr);
-    const endDate = new Date(endStr);
+    const startDate = parseLocalDate(startStr);
+    const endDate = parseLocalDate(endStr);
 
     if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
       await sendDirectMessage({ _id: userId, username: username }, '❌ Invalid date format. Please use YYYY-MM-DD.');
@@ -875,8 +922,8 @@ const processStandupResponse = async (message) => {
     try {
       const vacation = await Vacation.findOne({ userId: userId });
       if (vacation) {
-        const startStr = vacation.startDate.toISOString().split('T')[0];
-        const endStr = vacation.endDate.toISOString().split('T')[0];
+        const startStr = formatLocalDate(vacation.startDate);
+        const endStr = formatLocalDate(vacation.endDate);
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const isActive = today >= vacation.startDate && today <= vacation.endDate;
@@ -1129,6 +1176,106 @@ const processStandupResponse = async (message) => {
       return;
     }
 
+    if (cleanText.startsWith('mute')) {
+      commandMatched = true;
+      const parts = text.split(' ').filter(p => p.trim() !== '');
+      if (parts.length < 2) {
+        await sendDirectMessage({ _id: userId, username: username }, '❌ Usage: `mute YYYY-MM-DD [reason]`');
+        return;
+      }
+
+      const dateStr = parts[1];
+      const muteDate = parseLocalDate(dateStr);
+      const reason = parts.slice(2).join(' ') || 'Holiday/Day Off';
+
+      if (isNaN(muteDate.getTime())) {
+        await sendDirectMessage({ _id: userId, username: username }, `❌ Invalid date format: "${dateStr}". Please use YYYY-MM-DD.`);
+        return;
+      }
+
+      try {
+        await Mute.findOneAndUpdate(
+          { date: muteDate },
+          { date: muteDate, reason: reason, addedBy: username },
+          { upsert: true }
+        );
+        await sendDirectMessage({ _id: userId, username: username }, `✅ Standup muted for **${dateStr}** (${reason}).`);
+        
+        // Notify summary channel
+        if (!SUMMARY_CHANNEL_ID) {
+          SUMMARY_CHANNEL_ID = await driver.getRoomId(SUMMARY_CHANNEL_NAME);
+        }
+        await api.post('chat.postMessage', {
+          roomId: SUMMARY_CHANNEL_ID,
+          text: `🔕 *Standup Muted for ${dateStr}*\nReason: ${reason}\n_Admin: @${username}_`
+        });
+      } catch (err) {
+        await sendDirectMessage({ _id: userId, username: username }, `Error muting date: ${err.message}`);
+      }
+      return;
+    }
+
+    if (cleanText.startsWith('unmute')) {
+      commandMatched = true;
+      const parts = text.split(' ').filter(p => p.trim() !== '');
+      if (parts.length < 2) {
+        await sendDirectMessage({ _id: userId, username: username }, '❌ Usage: `unmute YYYY-MM-DD`');
+        return;
+      }
+
+      const dateStr = parts[1];
+      const muteDate = parseLocalDate(dateStr);
+      if (isNaN(muteDate.getTime())) {
+        await sendDirectMessage({ _id: userId, username: username }, `❌ Invalid date format: "${dateStr}". Please use YYYY-MM-DD.`);
+        return;
+      }
+
+      try {
+        const result = await Mute.deleteOne({ date: muteDate });
+        if (result.deletedCount > 0) {
+          await sendDirectMessage({ _id: userId, username: username }, `✅ Standup unmuted for **${dateStr}**.`);
+          
+          // Notify summary channel
+          if (!SUMMARY_CHANNEL_ID) {
+            SUMMARY_CHANNEL_ID = await driver.getRoomId(SUMMARY_CHANNEL_NAME);
+          }
+          await api.post('chat.postMessage', {
+            roomId: SUMMARY_CHANNEL_ID,
+            text: `🔔 *Standup Unmuted for ${dateStr}*\n_Standups will proceed as scheduled._\n_Admin: @${username}_`
+          });
+        } else {
+          await sendDirectMessage({ _id: userId, username: username }, `No mute found for **${dateStr}**.`);
+        }
+      } catch (err) {
+        await sendDirectMessage({ _id: userId, username: username }, `Error unmuting date: ${err.message}`);
+      }
+      return;
+    }
+
+    if (cleanText === 'list mutes') {
+      commandMatched = true;
+      try {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const mutes = await Mute.find({ date: { $gte: today } }).sort({ date: 1 });
+        
+        if (mutes.length === 0) {
+          await sendDirectMessage({ _id: userId, username: username }, 'No upcoming muted dates.');
+          return;
+        }
+
+        let listMsg = `*Upcoming Muted Dates (${mutes.length}):*\n`;
+        mutes.forEach(m => {
+          const dStr = formatLocalDate(m.date);
+          listMsg += `- **${dStr}**: ${m.reason} (Added by @${m.addedBy})\n`;
+        });
+        await sendDirectMessage({ _id: userId, username: username }, listMsg);
+      } catch (err) {
+        await sendDirectMessage({ _id: userId, username: username }, `Error listing mutes: ${err.message}`);
+      }
+      return;
+    }
+
     if (cleanText.startsWith('delete standup')) {
       commandMatched = true;
       const parts = text.split(' ').filter(p => p.trim() !== '');
@@ -1180,7 +1327,7 @@ const processStandupResponse = async (message) => {
 
       const targetUsername = parts[2].replace(/^@/, '');
       const dateStr = parts[3];
-      const targetDate = new Date(dateStr);
+      const targetDate = parseLocalDate(dateStr);
 
       if (isNaN(targetDate.getTime())) {
         await sendDirectMessage({ _id: userId, username: username }, `❌ Invalid date format: "${dateStr}". Please use YYYY-MM-DD.`);
@@ -1460,6 +1607,7 @@ module.exports = {
   Vacation,
   Config,
   Member,
+  Mute,
   refreshMembers,
   scheduleStandup,
   checkSnoozes,
