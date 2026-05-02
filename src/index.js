@@ -30,6 +30,10 @@ const cron = require('node-cron');
 // Import Mongoose for persistent storage
 const mongoose = require('mongoose');
 
+// Import axios and FormData for file uploads
+const axios = require('axios');
+const FormData = require('form-data');
+
 // --- 2. Database Schema ---
 // Define the schema for storing standup responses.
 const standupSchema = new mongoose.Schema({
@@ -156,6 +160,203 @@ const getQuestionColor = (index) => {
     '#f5455c'  // Red
   ];
   return palette[index % palette.length];
+};
+
+/**
+ * Escapes a string for use in a CSV field.
+ * @param {string} str The string to escape.
+ * @returns {string} The escaped string.
+ */
+const escapeCSV = (str) => {
+  if (str === null || str === undefined) return '""';
+  const stringified = String(str);
+  return `"${stringified.replace(/"/g, '""')}"`;
+};
+
+/**
+ * Generates a CSV string from standup records.
+ * @param {Array} records Array of standup documents.
+ * @param {string} targetUsername The username the report is for.
+ * @returns {string} The generated CSV content.
+ */
+const generateCSV = (records, targetUsername) => {
+  const headers = ['Date', 'Username', 'Status', 'Snooze Until'];
+  QUESTIONS_ARRAY.forEach((q, i) => headers.push(`Question ${i + 1}: ${q}`));
+  
+  let csv = headers.map(escapeCSV).join(',') + '\n';
+  
+  records.forEach(record => {
+    const row = [
+      formatLocalDate(record.date),
+      record.username,
+      record.status,
+      record.snoozeUntil ? record.snoozeUntil.toISOString() : ''
+    ];
+    
+    // Map answers to the correct question slots
+    QUESTIONS_ARRAY.forEach(q => {
+      const answerObj = record.answers.find(a => a.question === q);
+      row.push(answerObj ? answerObj.answer : '');
+    });
+    
+    csv += row.map(escapeCSV).join(',') + '\n';
+  });
+  
+  return csv;
+};
+
+/**
+ * Uploads a file to a Rocket.Chat room via REST API.
+ * @param {string} roomId The Room ID to upload to.
+ * @param {string} buffer The file content as a buffer or string.
+ * @param {string} filename The name of the file.
+ * @param {string} msg Optional message to accompany the file.
+ */
+const uploadFile = async (roomId, content, filename, msg = '') => {
+  const authToken = api.currentLogin.authToken;
+  const userId = api.currentLogin.userId;
+
+  if (!authToken || !userId) {
+    throw new Error('Not authenticated with Rocket.Chat API');
+  }
+
+  // Create an axios instance that respects the NODE_TLS_REJECT_UNAUTHORIZED environment variable
+  const https = require('https');
+  const axiosInstance = axios.create({
+    httpsAgent: new https.Agent({
+      rejectUnauthorized: process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0'
+    })
+  });
+
+  // Helper to try a specific URL
+  const tryUpload = async (url, includeRidInForm = true) => {
+    const form = new FormData();
+    form.append('file', Buffer.from(content), {
+      filename: filename,
+      contentType: 'text/csv'
+    });
+    if (includeRidInForm) {
+      form.append('rid', roomId);
+    }
+    if (msg) form.append('msg', msg);
+
+    console.log(`[uploadFile] Attempting upload to: ${url}`);
+    return await axiosInstance.post(url, form, {
+      headers: {
+        ...form.getHeaders(),
+        'X-Auth-Token': authToken,
+        'X-User-Id': userId
+      },
+      timeout: 30000
+    });
+  };
+
+  if (!ROCKCHAT_URL) {
+    throw new Error('ROCKETCHAT_URL is not defined');
+  }
+
+  let baseUrl = ROCKCHAT_URL.replace(/\/$/, '');
+  if (!baseUrl.startsWith('http')) {
+    baseUrl = `https://${baseUrl}`;
+  }
+
+  // List of potential endpoints to try
+  const endpoints = [
+    { url: `${baseUrl}/api/v1/rooms.upload/${roomId}`, type: 'standard' },
+    { url: `${baseUrl}/api/v1/rooms.upload`, type: 'form' },
+    { url: `${baseUrl}/api/v1/rooms.media/${roomId}`, type: 'media' }
+  ];
+
+  let lastError;
+  for (const endpoint of endpoints) {
+    try {
+      const response = await tryUpload(endpoint.url);
+      
+      if (response.data && response.data.success) {
+        // If we used the new rooms.media API, we MUST call rooms.media.confirm
+        if (endpoint.type === 'media') {
+          console.log(`[uploadFile] Media uploaded to ${endpoint.url}. Body:`, JSON.stringify(response.data));
+          const fileId = response.data.file ? response.data.file._id : null;
+          
+          if (!fileId) {
+            throw new Error('Upload succeeded but no fileId was returned in the response');
+          }
+
+          // Try various confirmation endpoints found in different Rocket.Chat versions/docs
+          const confirmEndpoints = [
+            `${baseUrl}/api/v1/rooms.mediaConfirm/${roomId}/${fileId}`,
+            `${baseUrl}/api/v1/rooms.mediaConfirm/${roomId}`,
+            `${baseUrl}/api/v1/rooms.mediaConfirm`,
+            `${baseUrl}/api/v1/rooms.confirmMedia/${roomId}/${fileId}`,
+            `${baseUrl}/api/v1/rooms.confirmMedia`,
+            `${baseUrl}/api/v1/rooms.confirmUpload/${roomId}/${fileId}`,
+            `${baseUrl}/api/v1/rooms.confirmUpload`,
+            `${baseUrl}/api/v1/rooms.media.confirm/${roomId}/${fileId}`,
+            `${baseUrl}/api/v1/rooms.media.confirm/${roomId}`,
+            `${baseUrl}/api/v1/rooms.media.confirm`
+          ];
+
+          let confirmSuccess = false;
+          let confirmError;
+
+          for (const confirmUrl of confirmEndpoints) {
+            try {
+              console.log(`[uploadFile] Attempting media confirmation at: ${confirmUrl}`);
+              
+              // Only include msg and description in the body if the URL already contains roomId/fileId
+              // This avoids "Match error" (extra fields) on some Rocket.Chat versions.
+              const isPathBased = confirmUrl.includes(roomId) && confirmUrl.includes(fileId);
+              const confirmBody = isPathBased ? { msg, description: filename } : { fileId, rid: roomId, msg, description: filename };
+              
+              console.log(`[uploadFile] Confirm body:`, JSON.stringify(confirmBody));
+
+              const confirmResponse = await axiosInstance.post(confirmUrl, confirmBody, {
+                headers: {
+                  'X-Auth-Token': authToken,
+                  'X-User-Id': userId,
+                  'Content-Type': 'application/json'
+                }
+              });
+
+              if (confirmResponse.data && confirmResponse.data.success) {
+                console.log(`[uploadFile] Media confirmed and posted successfully via ${confirmUrl}.`);
+                confirmSuccess = true;
+                break;
+              }
+            } catch (err) {
+              confirmError = err;
+              const status = err.response ? err.response.status : 'No response';
+              console.log(`[uploadFile] Confirm attempt failed for ${confirmUrl}: ${status} ${err.message}`);
+              if (err.response && err.response.data) {
+                console.log(`[uploadFile] Confirm error details:`, JSON.stringify(err.response.data));
+              }
+            }
+          }
+
+          if (confirmSuccess) return;
+          throw confirmError || new Error('Failed to confirm media upload');
+        }
+
+        console.log(`[uploadFile] Upload successful using: ${endpoint.url}`);
+        return;
+      }
+    } catch (error) {
+      lastError = error;
+      const status = error.response ? error.response.status : 'No response';
+      console.log(`[uploadFile] Attempt failed for ${endpoint.url}: ${status} ${error.message}`);
+      
+      // If the error response contains details, log them
+      if (error.response && error.response.data) {
+        console.log(`[uploadFile] Error details:`, JSON.stringify(error.response.data));
+      }
+
+      if (status !== 404 && status !== 'No response') {
+        break; 
+      }
+    }
+  }
+
+  throw lastError || new Error('Failed to upload file after trying all endpoints');
 };
 
 // --- 3. Environment Variables ---
@@ -294,6 +495,14 @@ const connect = async () => {
     console.log('Logging in to API...');
     await api.login({ username: BOT_USERNAME, password: BOT_PASSWORD });
     console.log('API login successful.');
+    
+    // Log Rocket.Chat version info
+    try {
+      const info = await api.get('info');
+      console.log(`[connect] Rocket.Chat Server Version: ${info.version || 'unknown'}`);
+    } catch (infoErr) {
+      console.log(`[connect] Could not retrieve server version info: ${infoErr.message}`);
+    }
     
     // Fallback: If we still don't have the ID, get it from the API
     if (!BOT_USER_ID) {
@@ -805,6 +1014,7 @@ const getHelpMessage = (isAdmin) => {
     helpMsg += `- \`force summary\`: Immediately post the final summary for all users.\n`;
     helpMsg += `- \`list users\`: View all participants and their current status.\n`;
     helpMsg += `- \`list admins\`: View all users with administrative privileges.\n`;
+    helpMsg += `- \`show version\`: View bot and server version information.\n`;
     helpMsg += `- \`show schedule\`: View the current cron schedule for standups.\n`;
     helpMsg += `- \`set schedule [cron]\`: Dynamically update the standup schedule.\n`;
     helpMsg += `- \`team stats\`: View participation statistics for the entire team.\n`;
@@ -812,6 +1022,7 @@ const getHelpMessage = (isAdmin) => {
     helpMsg += `- \`remove user @username\`: Remove a user from the standup member list.\n`;
     helpMsg += `- \`add admin @username\`: Grant admin privileges to a user.\n`;
     helpMsg += `- \`remove admin @username\`: Revoke admin privileges from a user.\n`;
+    helpMsg += `- \`download report @username [YYYY-MM-DD] [YYYY-MM-DD]\`: Download a user's standup responses as a CSV file.\n`;
     helpMsg += `- \`mute YYYY-MM-DD [reason]\`: Mute standups for a specific date.\n`;
     helpMsg += `- \`unmute YYYY-MM-DD\`: Unmute standups for a specific date.\n`;
     helpMsg += `- \`list mutes\`: View all upcoming muted dates.\n`;
@@ -1405,6 +1616,75 @@ const processStandupResponse = async (message) => {
       return;
     }
 
+    if (cleanText.startsWith('download report')) {
+      commandMatched = true;
+      const parts = text.split(' ').filter(p => p.trim() !== '');
+      if (parts.length < 3) {
+        await sendDirectMessage({ _id: userId, username: username }, '❌ Usage: `download report @username [YYYY-MM-DD] [YYYY-MM-DD]`');
+        return;
+      }
+
+      const targetUsername = parts[2].replace(/^@/, '');
+      let startDate, endDate;
+
+      if (parts.length >= 5) {
+        startDate = parseLocalDate(parts[3]);
+        endDate = parseLocalDate(parts[4]);
+      } else {
+        // Default to current month
+        const now = new Date();
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+        endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+      }
+
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+        await sendDirectMessage({ _id: userId, username: username }, '❌ Invalid date format. Please use YYYY-MM-DD.');
+        return;
+      }
+
+      try {
+        const targetUserId = await getUserIdByUsername(targetUsername);
+        if (!targetUserId) {
+          await sendDirectMessage({ _id: userId, username: username }, `❌ Could not find user @${targetUsername}`);
+          return;
+        }
+
+        const records = await Standup.find({
+          userId: targetUserId,
+          date: { $gte: startDate, $lte: endDate }
+        }).sort({ date: 1 });
+
+        if (records.length === 0) {
+          await sendDirectMessage({ _id: userId, username: username }, `No standup records found for @${targetUsername} between ${formatLocalDate(startDate)} and ${formatLocalDate(endDate)}.`);
+          return;
+        }
+
+        const csvContent = generateCSV(records, targetUsername);
+        const filename = `standup-report-${targetUsername}-${formatLocalDate(startDate)}-to-${formatLocalDate(endDate)}.csv`;
+        
+        // Find or create DM room with requester
+        const imCreateResult = await api.post('im.create', { username: username });
+        const dmRoomId = imCreateResult.room._id;
+
+        await uploadFile(dmRoomId, csvContent, filename, `📊 Here is the standup report for @${targetUsername} from ${formatLocalDate(startDate)} to ${formatLocalDate(endDate)}.`);
+      } catch (err) {
+        console.error('[Download Report] Error:', err.message);
+        await sendDirectMessage({ _id: userId, username: username }, `Error generating report: ${err.message}`);
+      }
+      return;
+    }
+
+    if (cleanText === 'show version') {
+      commandMatched = true;
+      try {
+        const info = await api.get('info');
+        await sendDirectMessage({ _id: userId, username: username }, `*Rocket.Chat Server Info*\n- Version: ${info.version || 'unknown'}\n- Bot Version: v${BOT_VERSION}`);
+      } catch (err) {
+        await sendDirectMessage({ _id: userId, username: username }, `Error fetching server info: ${err.message}`);
+      }
+      return;
+    }
+
     if (cleanText === 'show schedule') {
       commandMatched = true;
       await sendDirectMessage({ _id: userId, username: username }, `The current standup schedule is set to: \`${currentStandupTime}\``);
@@ -1645,6 +1925,8 @@ module.exports = {
   scheduleStandup,
   checkSnoozes,
   isUserOnHoliday,
+  generateCSV,
+  uploadFile,
   VALID_STANDUP_MEMBERS,
   ADMIN_USER_IDS
 };

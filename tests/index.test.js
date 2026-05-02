@@ -2,6 +2,7 @@
 process.env.MONGODB_URI = 'mongodb://localhost:27017/test';
 process.env.STANDUP_USERS = 'member1,member2';
 process.env.QUESTIONS = 'Q1;Q2';
+process.env.ROCKETCHAT_URL = 'https://chat.vhkzone.org';
 // Mock node-cron
 jest.mock('node-cron', () => ({
   schedule: jest.fn().mockReturnValue({
@@ -10,6 +11,20 @@ jest.mock('node-cron', () => ({
   }),
   validate: jest.fn().mockReturnValue(true)
 }));
+
+// Mock axios and form-data
+const mockAxios = {
+  post: jest.fn().mockResolvedValue({ data: { success: true } }),
+  create: jest.fn().mockReturnThis()
+};
+jest.mock('axios', () => mockAxios);
+
+jest.mock('form-data', () => {
+  return jest.fn().mockImplementation(() => ({
+    append: jest.fn(),
+    getHeaders: jest.fn().mockReturnValue({ 'content-type': 'multipart/form-data' })
+  }));
+});
 
 const { 
   getStandupForToday, 
@@ -26,6 +41,8 @@ const {
   scheduleStandup,
   checkSnoozes,
   isUserOnHoliday,
+  generateCSV,
+  uploadFile,
   VALID_STANDUP_MEMBERS,
   ADMIN_USER_IDS
 } = require('../src/index');
@@ -867,6 +884,83 @@ describe('Standup Bot Logic', () => {
           text: expect.stringContaining('Standup Muted Today'),
           text: expect.stringContaining('Public Holiday')
         })
+      );
+    });
+  });
+
+  describe('Report Feature', () => {
+    const { driver, api } = require('@rocket.chat/sdk');
+    const axios = require('axios');
+
+    it('should generate a valid CSV string', () => {
+      const mockRecords = [
+        {
+          date: new Date(2026, 4, 1),
+          username: 'user1',
+          status: 'answered',
+          snoozeUntil: null,
+          answers: [
+            { question: 'Q1', answer: 'Answer "One"' },
+            { question: 'Q2', answer: 'Answer, Two' }
+          ]
+        }
+      ];
+
+      const csv = generateCSV(mockRecords, 'user1');
+      
+      expect(csv).toContain('"Date","Username","Status","Snooze Until","Question 1: Q1","Question 2: Q2"');
+      expect(csv).toContain('"2026-05-01","user1","answered","","Answer ""One""","Answer, Two"');
+    });
+
+    it('should allow admin to download report', async () => {
+      ADMIN_USER_IDS.push('admin1');
+      api.post.mockResolvedValue({ room: { _id: 'room1' } });
+      api.get.mockResolvedValue({ user: { _id: 'user1_id', username: 'user1' } });
+      
+      // Mock standup records
+      const mockRecords = [{ date: new Date(), username: 'user1', status: 'answered', answers: [] }];
+      jest.spyOn(Standup, 'find').mockReturnValue({
+        sort: jest.fn().mockResolvedValue(mockRecords)
+      });
+
+      // Mock SDK credentials
+      api.currentLogin = { authToken: 'token', userId: 'botid' };
+
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'download report @user1 2026-05-01 2026-05-31',
+        _id: 'msg_download'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining('/api/v1/rooms.upload/'),
+        expect.any(Object),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'X-Auth-Token': 'token',
+            'X-User-Id': 'botid'
+          })
+        })
+      );
+    });
+
+    it('should reject download report if user not found', async () => {
+      ADMIN_USER_IDS.push('admin1');
+      api.get.mockResolvedValue(null); // User not found
+      
+      const mockMessage = {
+        u: { _id: 'admin1', username: 'admin1' },
+        msg: 'download report @nonexistent',
+        _id: 'msg_download_fail'
+      };
+
+      await processStandupResponse(mockMessage);
+
+      expect(driver.sendToRoomId).toHaveBeenCalledWith(
+        expect.stringContaining('Could not find user @nonexistent'),
+        expect.any(String)
       );
     });
   });

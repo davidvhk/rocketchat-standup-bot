@@ -108,6 +108,7 @@ Users listed in `ADMIN_USERS` (or added via `add admin`) can also use:
 - `force summary`: Immediately compile and post the standup summary to the summary channel.
 - `list users`: View all active standup members and their current session status.
 - `list admins`: View all users with administrative privileges.
+- `show version`: View bot and Rocket.Chat server version information.
 - `show schedule`: View the current cron schedule for standups.
 - `set schedule [cron]`: Dynamically update the standup schedule (e.g., `set schedule 0 10 * * 1-5`).
 - `team stats`: View participation statistics for the entire team, including a leaderboard.
@@ -115,6 +116,7 @@ Users listed in `ADMIN_USERS` (or added via `add admin`) can also use:
 - `remove user @username`: Remove a user from the standup member list.
 - `add admin @username`: Grant admin privileges to a user.
 - `remove admin @username`: Revoke admin privileges from a user.
+- `download report @username [YYYY-MM-DD] [YYYY-MM-DD]`: Download a user's standup responses as a CSV file.
 - `mute YYYY-MM-DD [reason]`: Mute standups for a specific date with an optional reason.
 - `unmute YYYY-MM-DD`: Unmute standups for a specific date.
 - `list mutes`: View all upcoming muted dates.
