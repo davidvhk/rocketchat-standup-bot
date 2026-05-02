@@ -2,6 +2,7 @@
 process.env.MONGODB_URI = 'mongodb://localhost:27017/test';
 process.env.STANDUP_USERS = 'member1,member2';
 process.env.QUESTIONS = 'Q1;Q2';
+process.env.ROCKETCHAT_URL = 'https://chat.vhkzone.org';
 // Mock node-cron
 jest.mock('node-cron', () => ({
   schedule: jest.fn().mockReturnValue({

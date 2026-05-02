@@ -251,6 +251,10 @@ const uploadFile = async (roomId, content, filename, msg = '') => {
     });
   };
 
+  if (!ROCKCHAT_URL) {
+    throw new Error('ROCKETCHAT_URL is not defined');
+  }
+
   let baseUrl = ROCKCHAT_URL.replace(/\/$/, '');
   if (!baseUrl.startsWith('http')) {
     baseUrl = `https://${baseUrl}`;
