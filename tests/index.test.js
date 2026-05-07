@@ -163,13 +163,17 @@ describe('Standup Bot Logic', () => {
       expect(api.post).toHaveBeenCalledWith(
         'chat.postMessage',
         expect.objectContaining({
+          text: expect.stringContaining('Standup update for @user1'),
           attachments: expect.arrayContaining([
-            expect.objectContaining({ text: expect.stringContaining('Summary for @user1') }),
             expect.objectContaining({ color: '#2de0a5', title: 'Q1', text: 'Answer 1' }),
             expect.objectContaining({ color: '#1d74f5', title: 'Q2', text: 'Answer 2' })
           ])
         })
       );
+      // Ensure the old header is gone
+      const call = api.post.mock.calls.find(c => c[0] === 'chat.postMessage');
+      const attachments = call[1].attachments;
+      expect(attachments.find(a => a.text && a.text.includes('🔔'))).toBeUndefined();
     });
   });
 
@@ -314,10 +318,10 @@ describe('Standup Bot Logic', () => {
       expect(api.post).toHaveBeenCalledWith(
         'chat.postMessage',
         expect.objectContaining({
+          text: expect.stringContaining('Daily Standup Consolidated Report'),
           attachments: expect.arrayContaining([
-            expect.objectContaining({ text: expect.stringContaining('Summary for @user1') }),
-            expect.objectContaining({ color: '#2de0a5', title: 'Q1', text: 'Work 1' }),
-            expect.objectContaining({ color: '#1d74f5', title: 'Q2', text: 'Work 2' })
+            expect.objectContaining({ title: '✅ Participated', text: expect.stringContaining('@user1') }),
+            expect.objectContaining({ text: expect.stringContaining('Bot version: v') })
           ])
         })
       );

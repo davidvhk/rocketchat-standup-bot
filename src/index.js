@@ -647,14 +647,7 @@ const publishIndividualSummary = async (userId, userResponse) => {
     
     const attachments = [];
     
-    // 1. Header attachment
-    attachments.push({
-      color: getColor(userResponse.status),
-      text: `🔔 *Standup Summary for @${userResponse.username}*`,
-      ts: new Date().toISOString()
-    });
-
-    // 2. One attachment per question for colorful display
+    // One attachment per question for colorful display
     userResponse.answers.forEach((ans, i) => {
       attachments.push({
         color: getQuestionColor(i),
@@ -666,7 +659,7 @@ const publishIndividualSummary = async (userId, userResponse) => {
     await api.post('chat.postMessage', {
       roomId: SUMMARY_CHANNEL_ID,
       attachments: attachments,
-      text: `_Bot version: ${BOT_VERSION}_`
+      text: `✅ *Standup update for @${userResponse.username}*`
     });
 
     console.log(`[publishIndividualSummary] Summary posted for @${userResponse.username}`);
@@ -946,44 +939,59 @@ const publishStandupSummary = async () => {
   if (standupResponses.size === 0) {
     attachments.push({
       color: getColor('default'),
-      text: 'No standup responses were collected today.'
+      text: 'No standup sessions were initiated today.'
     });
   } else {
+    const answered = [];
+    const skipped = [];
+    const pending = [];
+
     for (const [userId, data] of standupResponses.entries()) {
       if (data.status === 'answered') {
-        // User header
-        attachments.push({
-          color: getColor('answered'),
-          text: `✅ *Summary for @${data.username}*`
-        });
-        
-        // Individual questions with their own colors
-        data.answers.forEach((ans, i) => {
-          attachments.push({
-            color: getQuestionColor(i),
-            title: QUESTIONS_ARRAY[i],
-            text: ans
-          });
-        });
+        answered.push(`@${data.username}`);
       } else if (data.status === 'skipped') {
-        attachments.push({
-          color: getColor('skipped'),
-          text: `🟡 @${data.username}: Skipped the standup.`
-        });
+        skipped.push(`@${data.username}`);
       } else if (data.status === 'pending') {
-        attachments.push({
-          color: getColor('pending'),
-          text: `🔴 @${data.username}: Did not respond.`
-        });
+        pending.push(`@${data.username}`);
       }
+    }
+
+    if (answered.length > 0) {
+      attachments.push({
+        color: getColor('answered'),
+        title: '✅ Participated',
+        text: answered.join(', ')
+      });
+    }
+
+    if (skipped.length > 0) {
+      attachments.push({
+        color: getColor('skipped'),
+        title: '🟡 Skipped',
+        text: skipped.join(', ')
+      });
+    }
+
+    if (pending.length > 0) {
+      attachments.push({
+        color: getColor('pending'),
+        title: '🔴 No Response',
+        text: pending.join(', ')
+      });
     }
   }
 
   try {
     await api.post('chat.postMessage', {
       roomId: SUMMARY_CHANNEL_ID,
-      text: `🗓️ *Daily Standup Consolidated Report*\n_Bot version: ${BOT_VERSION}_`,
-      attachments: attachments
+      text: `🗓️ *Daily Standup Consolidated Report*`,
+      attachments: [
+        ...attachments,
+        {
+          color: '#cbced1',
+          text: `_Bot version: v${BOT_VERSION}_`
+        }
+      ]
     });
     console.log('[publishStandupSummary] Final summary published successfully!');
   } catch (error) {
