@@ -844,6 +844,7 @@ const promptUsersForStandup = async () => {
     }
 
     standupResponses.clear(); // Clear previous session responses
+    lastSentQuestionIndex.clear(); // Clear the tracker to allow new prompts
     const validMembers = VALID_STANDUP_MEMBERS;
 
     console.log(`[promptUsersForStandup] Found ${validMembers.length} valid members for standup.`);
@@ -1050,6 +1051,14 @@ const processStandupResponse = async (message) => {
   if (String(userId) === String(BOT_USER_ID) || username === BOT_USERNAME) return;
 
   console.log(`[Message Received] From @${username}: "${text}"`);
+
+  // Update username in DB and memory if it changed to prevent "confusion with another one"
+  const memberIndex = VALID_STANDUP_MEMBERS.findIndex(m => m._id === userId);
+  if (memberIndex !== -1 && VALID_STANDUP_MEMBERS[memberIndex].username !== username) {
+    console.log(`[processStandupResponse] Updating username for ${userId}: ${VALID_STANDUP_MEMBERS[memberIndex].username} -> ${username}`);
+    VALID_STANDUP_MEMBERS[memberIndex].username = username;
+    await Member.findOneAndUpdate({ userId: userId }, { username: username });
+  }
 
   // Handle Commands
   const cleanText = text.toLowerCase().trim();
@@ -1727,6 +1736,11 @@ const processStandupResponse = async (message) => {
 
   // 4. Standup Flow Logic
   let userSession = standupResponses.get(userId);
+  
+  // Keep session username in sync
+  if (userSession && userSession.username !== username) {
+    userSession.username = username;
+  }
 
   if (cleanText.startsWith('snooze')) {
     if (!userSession || userSession.status !== 'pending') {
@@ -1805,6 +1819,8 @@ const processStandupResponse = async (message) => {
         standupResponses.set(userId, userSession);
       }
     }
+
+    lastSentQuestionIndex.delete(userId); // Clear the tracker to ensure we send the next question
 
     if (!userSession) {
       userSession = { username: username, answers: [], status: 'pending' };
@@ -1927,6 +1943,7 @@ module.exports = {
   isUserOnHoliday,
   generateCSV,
   uploadFile,
+  lastSentQuestionIndex,
   VALID_STANDUP_MEMBERS,
   ADMIN_USER_IDS
 };
